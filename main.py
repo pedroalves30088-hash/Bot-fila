@@ -1,10 +1,10 @@
 import discord
 from discord.ext import commands
 import os
+import random
 from flask import Flask
 from threading import Thread
 
-# --- KEEP ALIVE PRO RENDER NÃO DORMIR ---
 app = Flask('')
 @app.route('/')
 def home():
@@ -18,7 +18,7 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# LISTA DE VALORES - COMEÇA DE 0.05 E VAI ATÉ 100
+# VALORES NA ORDEM CERTA PRA CRIAR
 VALORES = [0.05, 0.10, 0.15, 0.30, 0.60, 1, 2, 3, 5, 10, 20, 30, 50, 100]
 
 def formatar_valor(v):
@@ -29,8 +29,17 @@ def formatar_valor(v):
             return f"R$ {int(v)}"
         return f"R$ {v}"
 
-# Guarda as filas: {id_da_mensagem: {"modo": "2x2 Mobile", "valor": 1, "jogadores": []}}
 filas = {}
+
+def pegar_cargos_staff(guild):
+    dono = mediador = None
+    for r in guild.roles:
+        nome = r.name.upper()
+        if "DONO" in nome:
+            dono = r
+        if "MEDIADOR" in nome:
+            mediador = r
+    return dono, mediador
 
 class BotoesFila(discord.ui.View):
     def __init__(self, msg_id):
@@ -43,13 +52,10 @@ class BotoesFila(discord.ui.View):
         if not fila:
             await interaction.response.send_message("Essa fila não existe mais!", ephemeral=True)
             return
-
         user = interaction.user
         if user in fila["jogadores"]:
             await interaction.response.send_message("Você já está na fila!", ephemeral=True)
             return
-
-        # 2x2 = máximo 2 jogadores
         if len(fila["jogadores"]) >= 2:
             await interaction.response.send_message("Fila cheia!", ephemeral=True)
             return
@@ -57,10 +63,10 @@ class BotoesFila(discord.ui.View):
         fila["jogadores"].append(user)
         await atualizar_painel(interaction, fila, self.msg_id)
 
-        # QUANDO ENCHER 2 JOGADORES -> MANDA PRA #apostas
+        # ENCHEU 2 -> CRIA CANAL NOVO, NÃO FECHA A FILA
         if len(fila["jogadores"]) == 2:
-            await enviar_para_apostas(interaction.guild, fila)
-            fila["jogadores"] = []  # zera a fila pra próxima dupla
+            await criar_canal_partida(interaction.guild, fila)
+            fila["jogadores"] = []  # zera só pra próxima dupla entrar, fila continua aberta
             await atualizar_painel(interaction, fila, self.msg_id)
 
         await interaction.response.defer()
@@ -93,44 +99,44 @@ async def atualizar_painel(interaction, fila, msg_id):
     except:
         pass
 
-async def enviar_para_apostas(guild, fila):
-    # Acha o canal de apostas pelo nome
-    canal_apostas = discord.utils.get(guild.text_channels, name="apostas")
-    if not canal_apostas:
-        for c in guild.text_channels:
-            if "apostas" in c.name.lower():
-                canal_apostas = c
-                break
-    if not canal_apostas:
-        return
+async def criar_canal_partida(guild, fila):
+    dono, mediador = pegar_cargos_staff(guild)
+    numero = random.randint(10000, 99999)
+    nome_canal = f"aguardando-{numero}"
 
-    # TRAVA O CANAL: só DONO e MEDIADOR veem
-    # CORRIGIDO: procura pelo nome mesmo com emoji 👑 • DONO
-    try:
-        dono = None
-        mediador = None
-        for r in guild.roles:
-            nome = r.name.upper()
-            if "DONO" in nome:
-                dono = r
-            if "MEDIADOR" in nome:
-                mediador = r
+    # Permissões: @everyone NÃO vê, só os 2 jogadores + DONO + MEDIADOR
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+    }
+    for j in fila["jogadores"]:
+        overwrites[j] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+    if dono:
+        overwrites[dono] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+    if mediador:
+        overwrites[mediador] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-        # @everyone não vê
-        await canal_apostas.set_permissions(guild.default_role, view_channel=False)
-        if dono:
-            await canal_apostas.set_permissions(dono, view_channel=True, send_messages=True, read_message_history=True)
-        if mediador:
-            await canal_apostas.set_permissions(mediador, view_channel=True, send_messages=True, read_message_history=True)
-    except Exception as e:
-        print(f"Erro ao travar canal: {e}")
+    # Tenta criar dentro da categoria ÁREA MEDIADOR / PARTIDAS se existir
+    categoria = None
+    for cat in guild.categories:
+        if "MEDIADOR" in cat.name.upper() or "PARTIDA" in cat.name.upper():
+            categoria = cat
+            break
+
+    canal = await guild.create_text_channel(nome_canal, overwrites=overwrites, category=categoria, reason=f"Partida {fila['modo']} {formatar_valor(fila['valor'])}")
+
+    # Marca DONO e MEDIADOR
+    ping = ""
+    if dono:
+        ping += f"{dono.mention} "
+    if mediador:
+        ping += f"{mediador.mention} "
 
     jogadores = " x ".join([j.mention for j in fila["jogadores"]])
-    embed = discord.Embed(title="🔥 NOVA APOSTA FECHADA!", color=0xff0000)
-    embed.add_field(name="Modo", value=fila["modo"], inline=False)
+    embed = discord.Embed(title=f"Esperando Confirmar #{numero}", color=0xff0000)
+    embed.add_field(name="Modo", value=f"{fila['modo']} | Full Ump Xm8", inline=False)
     embed.add_field(name="Valor", value=formatar_valor(fila["valor"]), inline=False)
-    embed.add_field(name="Dupla", value=jogadores, inline=False)
-    await canal_apostas.send(embed=embed)
+    embed.add_field(name="Jogadores", value=jogadores, inline=False)
+    await canal.send(content=f"{ping}Nova partida fechada!", embed=embed)
 
 @bot.command()
 async def painel(ctx, modo: str = "2x2 Mobile"):
@@ -139,7 +145,8 @@ async def painel(ctx, modo: str = "2x2 Mobile"):
     except:
         pass
 
-    for valor in VALORES:
+    # AO CONTRÁRIO: cria de 100$ até 0.05cc, pra 0.05cc ficar EMBAIXO igual na Pocoyo
+    for valor in reversed(VALORES):
         embed = discord.Embed(title=f"{modo} | Apostado", color=0x00ff00)
         embed.add_field(name="Modo", value=modo, inline=False)
         embed.add_field(name="Valor", value=formatar_valor(valor), inline=False)

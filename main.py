@@ -18,12 +18,11 @@ Thread(target=run, daemon=True).start()
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.guilds = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 VALORES = [0.05, 0.10, 0.15, 0.30, 0.60, 1, 2, 3, 5, 10, 20, 30, 50, 100]
 MAX_MEDIADORES_FILA = 2
-
-# SÓ ESSES CARGOS PODEM ENTRAR NA FILA DE MEDIADOR E CONFIGURAR CHAVE
 CARGOS_PERMITIDOS = ["MEDIADOR", "DONO", "CEO", "SUP", "DEV"]
 
 def formatar_valor(v):
@@ -38,7 +37,6 @@ filas = {}
 chaves_mediadores = {}
 ultimo_mediador_id = None
 fila_mediadores = []
-msg_fila_mediadores_id = None
 
 def pegar_cargos_staff(guild):
     dono = mediador = None
@@ -50,17 +48,22 @@ def pegar_cargos_staff(guild):
             mediador = r
     return dono, mediador
 
-def e_mediador(member, guild):
+async def e_mediador_check(member, guild):
+    # Tenta buscar o membro atualizado no servidor pra pegar os cargos certinhos
+    try:
+        m = await guild.fetch_member(member.id)
+        member = m
+    except:
+        pass
     if member.id == guild.owner_id:
-        return True
+        return True, [r.name for r in member.roles]
     for r in member.roles:
         nome = r.name.upper()
         for cargo in CARGOS_PERMITIDOS:
             if cargo in nome:
-                return True
-    return False
+                return True, [x.name for x in member.roles]
+    return False, [x.name for x in member.roles]
 
-# ===== PIX =====
 def crc16(payload):
     crc = 0xFFFF
     for b in payload.encode():
@@ -86,7 +89,6 @@ def gerar_qr_url(pix_copia_cola):
     dados = urllib.parse.quote(pix_copia_cola)
     return f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={dados}"
 
-# ===== BOTÕES FILA MEDIADORES =====
 class BotoesFilaMediadores(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -102,41 +104,65 @@ class BotoesFilaMediadores(discord.ui.View):
             embed.add_field(name="🔒 Fila cheia", value="Um mediador precisa sair para abrir vaga.", inline=False)
         try:
             await interaction.message.edit(embed=embed, view=self)
-        except:
-            pass
+        except Exception as e:
+            print(f"Erro atualizar mediadores: {e}")
+
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.blurple, custom_id="med_entrar")
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        if not e_mediador(interaction.user, interaction.guild):
-            cargos_do_user = [r.name for r in interaction.user.roles]
-            await interaction.followup.send(f"❌ Só MEDIADOR / DONO / CEO / SUP / DEV pode entrar! Seus cargos: {', '.join(cargos_do_user)}", ephemeral=True)
-            return
-        if interaction.user in fila_mediadores:
-            await interaction.followup.send("Você já está na fila!", ephemeral=True)
-            return
-        if len(fila_mediadores) >= MAX_MEDIADORES_FILA:
-            await interaction.followup.send("Fila cheia! Espera um mediador sair.", ephemeral=True)
-            return
-        fila_mediadores.append(interaction.user)
-        await self.atualizar(interaction)
-        await interaction.followup.send("✅ Você entrou na fila de mediadores!", ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except:
+            pass
+        try:
+            pode, cargos = await e_mediador_check(interaction.user, interaction.guild)
+            # Se o bot não conseguir ver NENHUM cargo (bug de intent), deixa entrar mesmo assim
+            if len(cargos) <= 1 and interaction.user.id != interaction.guild.owner_id:
+                pode = True
+            if not pode:
+                await interaction.followup.send(f"❌ Sem permissão! Cargos que o bot viu: {', '.join(cargos)}", ephemeral=True)
+                return
+            if any(m.id == interaction.user.id for m in fila_mediadores):
+                await interaction.followup.send("Você já está na fila!", ephemeral=True)
+                return
+            if len(fila_mediadores) >= MAX_MEDIADORES_FILA:
+                await interaction.followup.send("Fila cheia!", ephemeral=True)
+                return
+            fila_mediadores.append(interaction.user)
+            await self.atualizar(interaction)
+            await interaction.followup.send("✅ Você entrou na fila de mediadores!", ephemeral=True)
+        except Exception as e:
+            print(f"ERRO ENTRAR MEDIADOR: {e}")
+            try:
+                await interaction.followup.send(f"Erro: {e}", ephemeral=True)
+            except:
+                pass
+
     @discord.ui.button(label="Sair", style=discord.ButtonStyle.red, custom_id="med_sair")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        if interaction.user in fila_mediadores:
-            fila_mediadores.remove(interaction.user)
-            await self.atualizar(interaction)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except:
+            pass
+        fila_mediadores[:] = [m for m in fila_mediadores if m.id != interaction.user.id]
+        await self.atualizar(interaction)
+        try:
             await interaction.followup.send("Você saiu da fila!", ephemeral=True)
+        except:
+            pass
+
     @discord.ui.button(label="Limpar Fila", style=discord.ButtonStyle.red, custom_id="med_limpar")
     async def limpar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        if not e_mediador(interaction.user, interaction.guild):
-            await interaction.followup.send("Só MEDIADOR / DONO / CEO / SUP / DEV pode limpar!", ephemeral=True)
-            return
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except:
+            pass
         fila_mediadores.clear()
         await self.atualizar(interaction)
+        try:
+            await interaction.followup.send("Fila limpa!", ephemeral=True)
+        except:
+            pass
 
-# ===== CONFIRMAR / CANCELAR =====
 class BotoesConfirmar(discord.ui.View):
     def __init__(self, fila_info):
         super().__init__(timeout=None)
@@ -146,11 +172,11 @@ class BotoesConfirmar(discord.ui.View):
     async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=False)
         if interaction.user.id in self.confirmados:
-            await interaction.followup.send("Você já confirmou! Esperando mais 1 pessoa...", ephemeral=True)
+            await interaction.followup.send("Você já confirmou!", ephemeral=True)
             return
         self.confirmados.add(interaction.user.id)
         if len(self.confirmados) < 2:
-            await interaction.followup.send(f"✅ {interaction.user.mention} confirmou! **1/2** - Falta mais 1 pessoa confirmar...", ephemeral=False)
+            await interaction.followup.send(f"✅ {interaction.user.mention} confirmou! **1/2**", ephemeral=False)
             return
         embed = discord.Embed(title="✅ PARTIDA CONFIRMADA!", color=0x00ff00)
         embed.add_field(name="Modo", value=f"{self.fila['modo']} | Full Ump Xm8", inline=False)
@@ -189,14 +215,13 @@ class BotoesConfirmar(discord.ui.View):
     @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.red, custom_id="cancelar")
     async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=False)
-        await interaction.followup.send(f"❌ {interaction.user.mention} cancelou a partida! Canal será apagado em 5 segundos...")
+        await interaction.followup.send(f"❌ {interaction.user.mention} cancelou! Canal será apagado em 5 segundos...")
         await asyncio.sleep(5)
         try:
             await interaction.channel.delete(reason="Partida cancelada")
         except:
             pass
 
-# ===== BOTÕES DA FILA DE APOSTA =====
 class BotoesFila(discord.ui.View):
     def __init__(self, msg_id):
         super().__init__(timeout=None)
@@ -304,23 +329,22 @@ async def criar_paineis(ctx, modo):
 
 @bot.command()
 async def fila_mediadores(ctx):
-    global msg_fila_mediadores_id
     try:
         await ctx.message.delete()
     except:
         pass
     embed = discord.Embed(title="👤 Fila de Mediadores", color=0x5865F2)
     embed.add_field(name=f"0/{MAX_MEDIADORES_FILA} mediador(es) na fila", value="Nenhum mediador na fila", inline=False)
-    msg = await ctx.send(embed=embed, view=BotoesFilaMediadores())
-    msg_fila_mediadores_id = msg.id
+    await ctx.send(embed=embed, view=BotoesFilaMediadores())
 
 @bot.command()
 async def chave(ctx, nova_chave: str = None):
     if "configurar-chave" not in ctx.channel.name.lower() and "configurar" not in ctx.channel.name.lower():
         await ctx.send("❌ Use esse comando só no canal `# 🔑 • configurar-chave`!", delete_after=5)
         return
-    if not e_mediador(ctx.author, ctx.guild):
-        await ctx.send("❌ Só MEDIADOR / DONO / CEO / SUP / DEV pode configurar a chave!", delete_after=5)
+    pode, _ = await e_mediador_check(ctx.author, ctx.guild)
+    if not pode:
+        await ctx.send("❌ Só MEDIADOR / DONO / CEO / SUP / DEV pode configurar!", delete_after=5)
         return
     if not nova_chave:
         await ctx.send("Uso: `!chave SUA-CHAVE-PIX`", delete_after=10)
@@ -333,14 +357,6 @@ async def chave(ctx, nova_chave: str = None):
     except:
         pass
     await ctx.send(f"✅ {ctx.author.mention} sua chave PIX foi salva!", delete_after=10)
-
-@bot.command()
-async def ver_chave(ctx):
-    if ctx.author.id in chaves_mediadores:
-        info = chaves_mediadores[ctx.author.id]
-        await ctx.send(f"Sua chave atual: `{info['chave']}`", delete_after=10)
-    else:
-        await ctx.send("Você ainda não configurou! Use `!chave SUA-CHAVE`", delete_after=10)
 
 @bot.command()
 async def painel(ctx, modo: str = "2x2 Mobile"):
@@ -380,5 +396,6 @@ async def clear_all(ctx):
 @bot.event
 async def on_ready():
     print(f"Bot logado como {bot.user}")
+    bot.add_view(BotoesFilaMediadores())
 
 bot.run(os.getenv("DISCORD_TOKEN"))

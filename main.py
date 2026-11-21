@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import os
 import random
+import asyncio
 from flask import Flask
 from threading import Thread
 
@@ -18,7 +19,11 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# VALORES NA ORDEM CERTA PRA CRIAR
+# ===== COLOCA SUA CHAVE PIX AQUI =====
+CHAVE_PIX_ADM = "COLOCA-SUA-CHAVE-PIX-AQUI"
+NOME_ADM_PIX = "SEU NOME NO PIX"
+# =====================================
+
 VALORES = [0.05, 0.10, 0.15, 0.30, 0.60, 1, 2, 3, 5, 10, 20, 30, 50, 100]
 
 def formatar_valor(v):
@@ -41,6 +46,54 @@ def pegar_cargos_staff(guild):
             mediador = r
     return dono, mediador
 
+def tem_cargo_staff(member, guild):
+    dono, mediador = pegar_cargos_staff(guild)
+    ids = []
+    if dono: ids.append(dono.id)
+    if mediador: ids.append(mediador.id)
+    return any(r.id in ids for r in member.roles)
+
+# ===== BOTÕES CONFIRMAR / CANCELAR DENTRO DO AGUARDANDO =====
+class BotoesConfirmar(discord.ui.View):
+    def __init__(self, fila_info):
+        super().__init__(timeout=None)
+        self.fila = fila_info
+
+    @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green, custom_id="confirmar")
+    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Só DONO / MEDIADOR pode confirmar
+        if not tem_cargo_staff(interaction.user, interaction.guild):
+            await interaction.response.send_message("Só DONO / MEDIADOR pode confirmar!", ephemeral=True)
+            return
+
+        embed = discord.Embed(title="✅ PARTIDA CONFIRMADA!", color=0x00ff00)
+        embed.add_field(name="Modo", value=f"{self.fila['modo']} | Full Ump Xm8", inline=False)
+        embed.add_field(name="Valor", value=formatar_valor(self.fila['valor']), inline=False)
+        embed.add_field(name="Jogadores", value=" x ".join([j.mention for j in self.fila['jogadores']]), inline=False)
+        embed.add_field(name="🔑 CHAVE PIX DO ADM", value=f"**{CHAVE_PIX_ADM}**\nNome: {NOME_ADM_PIX}", inline=False)
+        embed.add_field(name="📋 Como pagar", value=f"1. Paga **{formatar_valor(self.fila['valor'])}** pra chave acima\n2. Manda o comprovante aqui\n3. Chama o mediador pra criar a sala", inline=False)
+        await interaction.response.send_message(embed=embed)
+        # Desativa os botões depois de confirmar
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except:
+            pass
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.red, custom_id="cancelar")
+    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not tem_cargo_staff(interaction.user, interaction.guild):
+            await interaction.response.send_message("Só DONO / MEDIADOR pode cancelar!", ephemeral=True)
+            return
+        await interaction.response.send_message("❌ Partida cancelada! Canal será apagado em 5 segundos...")
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.delete(reason="Partida cancelada")
+        except:
+            pass
+
+# ===== BOTÕES DA FILA =====
 class BotoesFila(discord.ui.View):
     def __init__(self, msg_id):
         super().__init__(timeout=None)
@@ -59,16 +112,12 @@ class BotoesFila(discord.ui.View):
         if len(fila["jogadores"]) >= 2:
             await interaction.response.send_message("Fila cheia!", ephemeral=True)
             return
-
         fila["jogadores"].append(user)
         await atualizar_painel(interaction, fila, self.msg_id)
-
-        # ENCHEU 2 -> CRIA CANAL NOVO, NÃO FECHA A FILA
         if len(fila["jogadores"]) == 2:
             await criar_canal_partida(interaction.guild, fila)
-            fila["jogadores"] = []  # zera só pra próxima dupla entrar, fila continua aberta
+            fila["jogadores"] = []
             await atualizar_painel(interaction, fila, self.msg_id)
-
         await interaction.response.defer()
 
     @discord.ui.button(label="Sair", style=discord.ButtonStyle.red, custom_id="sair")
@@ -103,11 +152,7 @@ async def criar_canal_partida(guild, fila):
     dono, mediador = pegar_cargos_staff(guild)
     numero = random.randint(10000, 99999)
     nome_canal = f"aguardando-{numero}"
-
-    # Permissões: @everyone NÃO vê, só os 2 jogadores + DONO + MEDIADOR
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-    }
+    overwrites = { guild.default_role: discord.PermissionOverwrite(view_channel=False) }
     for j in fila["jogadores"]:
         overwrites[j] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
     if dono:
@@ -115,7 +160,6 @@ async def criar_canal_partida(guild, fila):
     if mediador:
         overwrites[mediador] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    # Tenta criar dentro da categoria ÁREA MEDIADOR / PARTIDAS se existir
     categoria = None
     for cat in guild.categories:
         if "MEDIADOR" in cat.name.upper() or "PARTIDA" in cat.name.upper():
@@ -124,19 +168,17 @@ async def criar_canal_partida(guild, fila):
 
     canal = await guild.create_text_channel(nome_canal, overwrites=overwrites, category=categoria, reason=f"Partida {fila['modo']} {formatar_valor(fila['valor'])}")
 
-    # Marca DONO e MEDIADOR
     ping = ""
-    if dono:
-        ping += f"{dono.mention} "
-    if mediador:
-        ping += f"{mediador.mention} "
+    if dono: ping += f"{dono.mention} "
+    if mediador: ping += f"{mediador.mention} "
 
     jogadores = " x ".join([j.mention for j in fila["jogadores"]])
     embed = discord.Embed(title=f"Esperando Confirmar #{numero}", color=0xff0000)
     embed.add_field(name="Modo", value=f"{fila['modo']} | Full Ump Xm8", inline=False)
     embed.add_field(name="Valor", value=formatar_valor(fila["valor"]), inline=False)
     embed.add_field(name="Jogadores", value=jogadores, inline=False)
-    await canal.send(content=f"{ping}Nova partida fechada!", embed=embed)
+    # Aqui vai os botões Confirmar / Cancelar igual na Pocoyo
+    await canal.send(content=f"{ping}Nova partida fechada!", embed=embed, view=BotoesConfirmar(fila))
 
 @bot.command()
 async def painel(ctx, modo: str = "2x2 Mobile"):
@@ -144,8 +186,6 @@ async def painel(ctx, modo: str = "2x2 Mobile"):
         await ctx.message.delete()
     except:
         pass
-
-    # AO CONTRÁRIO: cria de 100$ até 0.05cc, pra 0.05cc ficar EMBAIXO igual na Pocoyo
     for valor in reversed(VALORES):
         embed = discord.Embed(title=f"{modo} | Apostado", color=0x00ff00)
         embed.add_field(name="Modo", value=modo, inline=False)

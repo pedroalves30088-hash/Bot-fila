@@ -1,142 +1,165 @@
 import discord
 from discord.ext import commands
 import os
+from flask import Flask
+from threading import Thread
+
+# --- KEEP ALIVE PRO RENDER NÃO DORMIR ---
+app = Flask('')
+@app.route('/')
+def home():
+    return "Bot online!"
+def run():
+    app.run(host='0.0.0.0', port=8080)
+Thread(target=run, daemon=True).start()
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-intents.guilds = True
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-# VALORES DO MENOR PRO MAIOR - NÃO MEXER NA ORDEM
-VALORES = [0.05, 0.15, 0.30, 0.50, 1, 2, 2.5, 3, 5, 10, 20, 30, 50, 90, 100]
-
-# Fila: valor -> lista de jogadores
-filas = {v: [] for v in VALORES}
-
-# Cargos que podem ver a aposta
-CARGOS_STAFF = ["MEDIADOR", "FILAS ADM", "DONO", "CEO", "DIRETOR", "DEV"]
+# LISTA DE VALORES - COMEÇA DE 0.05 E VAI ATÉ 100
+VALORES = [0.05, 0.10, 0.15, 0.30, 0.60, 1, 2, 3, 5, 10, 20, 30, 50, 100]
 
 def formatar_valor(v):
-    if v == 0.05:
-        return "R$ 0,05"
-    if v == 0.15:
-        return "R$ 0,15"
-    if v == 0.30:
-        return "R$ 0,30"
-    if v == 0.50:
-        return "R$ 0,50"
-    if v == 2.5:
-        return "R$ 2,50"
-    # resto inteiro
-    return f"R$ {int(v)},00" if v == int(v) else f"R$ {str(v).replace('.', ',')}"
+    if v < 1:
+        return f"{v:.2f}cc".replace(".", ",")
+    else:
+        if v == int(v):
+            return f"R$ {int(v)}"
+        return f"R$ {v}"
 
-class PainelView(discord.ui.View):
-    def __init__(self, valor):
+# Guarda as filas: {id_da_mensagem: {"modo": "2x2 Mobile", "valor": 1, "jogadores": []}}
+filas = {}
+
+class BotoesFila(discord.ui.View):
+    def __init__(self, msg_id):
         super().__init__(timeout=None)
-        self.valor = valor
+        self.msg_id = msg_id
 
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green, custom_id="entrar")
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        valor = self.valor
-        user = interaction.user
-        guild = interaction.guild
+        fila = filas.get(self.msg_id)
+        if not fila:
+            await interaction.response.send_message("Essa fila não existe mais!", ephemeral=True)
+            return
 
-        if user.id in filas[valor]:
+        user = interaction.user
+        if user in fila["jogadores"]:
             await interaction.response.send_message("Você já está na fila!", ephemeral=True)
             return
 
-        filas[valor].append(user.id)
-        await interaction.response.send_message(f"Você entrou na fila de {formatar_valor(valor)}! ({len(filas[valor])}/2)", ephemeral=True)
+        # 2x2 = máximo 2 jogadores
+        if len(fila["jogadores"]) >= 2:
+            await interaction.response.send_message("Fila cheia!", ephemeral=True)
+            return
 
-        # QUANDO FECHAR 2 JOGADORES -> VAI PRA APOSTAS
-        if len(filas[valor]) == 2:
-            jogador1 = guild.get_member(filas[valor][0])
-            jogador2 = guild.get_member(filas[valor][1])
+        fila["jogadores"].append(user)
+        await atualizar_painel(interaction, fila, self.msg_id)
 
-            # Acha a categoria APOSTAS
-            categoria = None
-            for cat in guild.categories:
-                if "APOSTAS" in cat.name.upper():
-                    categoria = cat
-                    break
+        # QUANDO ENCHER 2 JOGADORES -> MANDA PRA #apostas
+        if len(fila["jogadores"]) == 2:
+            await enviar_para_apostas(interaction.guild, fila)
+            fila["jogadores"] = []  # zera a fila pra próxima dupla
+            await atualizar_painel(interaction, fila, self.msg_id)
 
-            # Permissões do canal privado
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
-                jogador1: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-                jogador2: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            }
-
-            # Libera os cargos da staff
-            for nome_cargo in CARGOS_STAFF:
-                cargo = discord.utils.get(guild.roles, name=nome_cargo)
-                if cargo:
-                    overwrites[cargo] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-
-            nome_canal = f"aposta-{str(valor).replace('.', '-')}-{jogador1.name}-x-{jogador2.name}".lower()[:90]
-            novo_canal = await guild.create_text_channel(nome_canal, category=categoria, overwrites=overwrites)
-
-            cargo_mediador = discord.utils.get(guild.roles, name="MEDIADOR")
-            mencao_mediador = cargo_mediador.mention if cargo_mediador else "@MEDIADOR"
-
-            embed = discord.Embed(
-                title=f"⚔️ APOSTA {formatar_valor(valor)} - 2x2 Mobile",
-                description=f"{jogador1.mention} 🆚 {jogador2.mention}\n\n{mencao_mediador} - Assume a mediação!",
-                color=discord.Color.gold()
-            )
-            embed.add_field(name="Jogador 1", value=jogador1.mention, inline=True)
-            embed.add_field(name="Jogador 2", value=jogador2.mention, inline=True)
-            embed.add_field(name="Valor", value=formatar_valor(valor), inline=False)
-            embed.set_footer(text="Boa sorte! Chame um mediador para começar.")
-
-            await novo_canal.send(content=f"{jogador1.mention} {jogador2.mention} {mencao_mediador}", embed=embed)
-
-            # Limpa a fila desse valor
-            filas[valor] = []
+        await interaction.response.defer()
 
     @discord.ui.button(label="Sair", style=discord.ButtonStyle.red, custom_id="sair")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
-        valor = self.valor
-        if interaction.user.id in filas[valor]:
-            filas[valor].remove(interaction.user.id)
-            await interaction.response.send_message("Você saiu da fila!", ephemeral=True)
-        else:
-            await interaction.response.send_message("Você não está na fila!", ephemeral=True)
+        fila = filas.get(self.msg_id)
+        if fila and interaction.user in fila["jogadores"]:
+            fila["jogadores"].remove(interaction.user)
+            await atualizar_painel(interaction, fila, self.msg_id)
+        await interaction.response.defer()
 
     @discord.ui.button(label="Full", style=discord.ButtonStyle.blurple, custom_id="full")
     async def full(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(f"Fila de {formatar_valor(self.valor)}: {len(filas[self.valor])}/2", ephemeral=True)
+        fila = filas.get(self.msg_id)
+        if not fila:
+            return
+        lista = "\n".join([f"{i+1}. {j.mention}" for i, j in enumerate(fila["jogadores"])]) or "Nenhum jogador ainda"
+        await interaction.response.send_message(f"**Fila {fila['modo']} - {formatar_valor(fila['valor'])}**\n{lista}", ephemeral=True)
+
+async def atualizar_painel(interaction, fila, msg_id):
+    try:
+        msg = await interaction.channel.fetch_message(msg_id)
+        jogadores_txt = "\n".join([f"{i+1}. {j.display_name}" for i, j in enumerate(fila["jogadores"])]) or "Nenhum jogador ainda"
+        embed = discord.Embed(title=f"{fila['modo']} | Apostado", color=0x00ff00)
+        embed.add_field(name="Modo", value=fila["modo"], inline=False)
+        embed.add_field(name="Valor", value=formatar_valor(fila["valor"]), inline=False)
+        embed.add_field(name="Jogadores:", value=jogadores_txt, inline=False)
+        await msg.edit(embed=embed, view=BotoesFila(msg_id))
+    except:
+        pass
+
+async def enviar_para_apostas(guild, fila):
+    # Acha o canal de apostas pelo nome
+    canal_apostas = discord.utils.get(guild.text_channels, name="apostas")
+    if not canal_apostas:
+        for c in guild.text_channels:
+            if "apostas" in c.name.lower():
+                canal_apostas = c
+                break
+    if not canal_apostas:
+        return
+
+    # TRAVA O CANAL: só DONO e MEDIADOR veem
+    # CORRIGIDO: procura pelo nome mesmo com emoji 👑 • DONO
+    try:
+        dono = None
+        mediador = None
+        for r in guild.roles:
+            nome = r.name.upper()
+            if "DONO" in nome:
+                dono = r
+            if "MEDIADOR" in nome:
+                mediador = r
+
+        # @everyone não vê
+        await canal_apostas.set_permissions(guild.default_role, view_channel=False)
+        if dono:
+            await canal_apostas.set_permissions(dono, view_channel=True, send_messages=True, read_message_history=True)
+        if mediador:
+            await canal_apostas.set_permissions(mediador, view_channel=True, send_messages=True, read_message_history=True)
+    except Exception as e:
+        print(f"Erro ao travar canal: {e}")
+
+    jogadores = " x ".join([j.mention for j in fila["jogadores"]])
+    embed = discord.Embed(title="🔥 NOVA APOSTA FECHADA!", color=0xff0000)
+    embed.add_field(name="Modo", value=fila["modo"], inline=False)
+    embed.add_field(name="Valor", value=formatar_valor(fila["valor"]), inline=False)
+    embed.add_field(name="Dupla", value=jogadores, inline=False)
+    await canal_apostas.send(embed=embed)
 
 @bot.command()
-async def painel(ctx, *args):
-    # !painel 2x2 Mobile
-    titulo = " ".join(args) if args else "2x2 Mobile"
-    # Apaga o comando
+async def painel(ctx, modo: str = "2x2 Mobile"):
     try:
         await ctx.message.delete()
     except:
         pass
 
-    # Manda SEMPRE do menor pro maior
-    for valor in sorted(VALORES):
-        embed = discord.Embed(
-            title=f"🎮 {titulo} | {formatar_valor(valor)}",
-            description=f"Valor: **{formatar_valor(valor)}**\nClique em Entrar para entrar na fila!",
-            color=discord.Color.green()
-        )
-        embed.set_footer(text="2 jogadores = cria aposta privada automaticamente")
-        await ctx.send(embed=embed, view=PainelView(valor))
+    for valor in VALORES:
+        embed = discord.Embed(title=f"{modo} | Apostado", color=0x00ff00)
+        embed.add_field(name="Modo", value=modo, inline=False)
+        embed.add_field(name="Valor", value=formatar_valor(valor), inline=False)
+        embed.add_field(name="Jogadores:", value="Nenhum jogador ainda", inline=False)
+        msg = await ctx.send(embed=embed, view=BotoesFila(0))
+        filas[msg.id] = {"modo": modo, "valor": valor, "jogadores": []}
+        await msg.edit(view=BotoesFila(msg.id))
 
 @bot.command()
 async def clear_all(ctx):
-    await ctx.channel.purge(limit=100)
-    await ctx.send("✅ Canal limpo!", delete_after=3)
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+    filas.clear()
+    deleted = await ctx.channel.purge(limit=100)
+    await ctx.send(f"🧹 Limpado {len(deleted)} mensagens!", delete_after=5)
 
 @bot.event
 async def on_ready():
-    print(f"Bot online: {bot.user}")
+    print(f"Bot logado como {bot.user}")
 
 bot.run(os.getenv("DISCORD_TOKEN"))

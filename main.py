@@ -36,7 +36,8 @@ def formatar_valor(v):
 filas = {}
 chaves_mediadores = {}
 ultimo_mediador_id = None
-fila_mediadores = []
+# NOME DIFERENTE DO COMANDO PRA NÃO DAR CONFLITO!
+lista_mediadores = []
 
 def pegar_cargos_staff(guild):
     dono = mediador = None
@@ -89,13 +90,13 @@ class BotoesFilaMediadores(discord.ui.View):
         super().__init__(timeout=None)
     async def atualizar(self, interaction):
         lista = ""
-        for i, m in enumerate(fila_mediadores):
+        for i, m in enumerate(lista_mediadores):
             lista += f"{i+1}. {m.display_name}\n"
         if not lista:
             lista = "Nenhum mediador na fila"
         embed = discord.Embed(title="👤 Fila de Mediadores", color=0x5865F2)
-        embed.add_field(name=f"{len(fila_mediadores)}/{MAX_MEDIADORES_FILA} mediador(es) na fila", value=lista, inline=False)
-        if len(fila_mediadores) >= MAX_MEDIADORES_FILA:
+        embed.add_field(name=f"{len(lista_mediadores)}/{MAX_MEDIADORES_FILA} mediador(es) na fila", value=lista, inline=False)
+        if len(lista_mediadores) >= MAX_MEDIADORES_FILA:
             embed.add_field(name="🔒 Fila cheia", value="Um mediador precisa sair para abrir vaga.", inline=False)
         try:
             await interaction.message.edit(embed=embed, view=self)
@@ -113,13 +114,13 @@ class BotoesFilaMediadores(discord.ui.View):
                 cargos = [r.name for r in getattr(interaction.user, "roles", [])]
                 await interaction.followup.send(f"❌ Sem permissão! Cargos que o bot viu: {', '.join(cargos) if cargos else 'nenhum'}", ephemeral=True)
                 return
-            if any(m.id == interaction.user.id for m in fila_mediadores):
+            if any(m.id == interaction.user.id for m in lista_mediadores):
                 await interaction.followup.send("Você já está na fila!", ephemeral=True)
                 return
-            if len(fila_mediadores) >= MAX_MEDIADORES_FILA:
+            if len(lista_mediadores) >= MAX_MEDIADORES_FILA:
                 await interaction.followup.send("Fila cheia!", ephemeral=True)
                 return
-            fila_mediadores.append(interaction.user)
+            lista_mediadores.append(interaction.user)
             await self.atualizar(interaction)
             await interaction.followup.send("✅ Você entrou na fila de mediadores!", ephemeral=True)
         except Exception as e:
@@ -136,7 +137,7 @@ class BotoesFilaMediadores(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
         except:
             pass
-        fila_mediadores[:] = [m for m in fila_mediadores if m.id != interaction.user.id]
+        lista_mediadores[:] = [m for m in lista_mediadores if m.id != interaction.user.id]
         await self.atualizar(interaction)
         try:
             await interaction.followup.send("Você saiu da fila!", ephemeral=True)
@@ -149,7 +150,7 @@ class BotoesFilaMediadores(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
         except:
             pass
-        fila_mediadores.clear()
+        lista_mediadores.clear()
         await self.atualizar(interaction)
         try:
             await interaction.followup.send("Fila limpa!", ephemeral=True)
@@ -272,8 +273,8 @@ async def criar_canal_partida(guild, fila):
     numero = random.randint(10000, 99999)
     nome_canal = f"aguardando-{numero}"
     mediador_escolhido = None
-    if fila_mediadores:
-        mediador_escolhido = random.choice(fila_mediadores)
+    if lista_mediadores:
+        mediador_escolhido = random.choice(lista_mediadores)
         fila["mediador_escolhido"] = mediador_escolhido
     else:
         fila["mediador_escolhido"] = None
@@ -320,8 +321,8 @@ async def criar_paineis(ctx, modo):
         filas[msg.id] = {"modo": modo, "valor": valor, "jogadores": []}
         await msg.edit(view=BotoesFila(msg.id))
 
-@bot.command()
-async def fila_mediadores(ctx):
+@bot.command(name="fila_mediadores")
+async def cmd_fila_mediadores(ctx):
     try:
         await ctx.message.delete()
     except:

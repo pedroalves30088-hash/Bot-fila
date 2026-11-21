@@ -27,6 +27,7 @@ VALORES = [0.05, 0.10, 0.15, 0.30, 0.60, 1, 2, 3, 5, 10, 20, 30, 50, 100]
 MAX_MEDIADORES_FILA = 2
 CARGOS_PERMITIDOS = ["MEDIADOR", "DONO", "CEO", "SUP", "DEV"]
 ARQUIVO_CHAVES = "chaves.json"
+ARQUIVO_RANKING = "ranking.json"
 
 def formatar_valor(v):
     if v < 1:
@@ -41,29 +42,60 @@ ultimo_mediador_id = None
 lista_mediadores = []
 partidas_por_canal = {}
 
-# ===== SALVAR CHAVES EM ARQUIVO - NÃO PERDE MAIS NO RESTART =====
+# ===== CHAVES =====
 def carregar_chaves():
     try:
         if os.path.exists(ARQUIVO_CHAVES):
             with open(ARQUIVO_CHAVES, "r", encoding="utf-8") as f:
                 dados = json.load(f)
-                # Converte as chaves de string pra int de novo
                 return {int(k): v for k, v in dados.items()}
     except Exception as e:
         print(f"Erro carregar chaves: {e}")
     return {}
-
 def salvar_chaves():
     try:
         with open(ARQUIVO_CHAVES, "w", encoding="utf-8") as f:
             json.dump(chaves_mediadores, f, ensure_ascii=False, indent=2)
-        print(f"Chaves salvas: {len(chaves_mediadores)}")
     except Exception as e:
         print(f"Erro salvar chaves: {e}")
-
 chaves_mediadores = carregar_chaves()
 if chaves_mediadores:
     ultimo_mediador_id = list(chaves_mediadores.keys())[-1]
+
+# ===== RANKING + COINS =====
+def carregar_ranking():
+    try:
+        if os.path.exists(ARQUIVO_RANKING):
+            with open(ARQUIVO_RANKING, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+                return {int(k): v for k, v in dados.items()}
+    except Exception as e:
+        print(f"Erro carregar ranking: {e}")
+    return {}
+def salvar_ranking():
+    try:
+        with open(ARQUIVO_RANKING, "w", encoding="utf-8") as f:
+            json.dump(ranking, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Erro salvar ranking: {e}")
+ranking = carregar_ranking()
+
+def pegar_perfil(user):
+    if user.id not in ranking:
+        ranking[user.id] = {"nome": user.display_name, "wins": 0, "losses": 0, "coins": 0, "partidas": 0}
+    ranking[user.id]["nome"] = user.display_name
+    return ranking[user.id]
+
+def adicionar_vitoria(vencedor, perdedor):
+    pv = pegar_perfil(vencedor)
+    pp = pegar_perfil(perdedor)
+    pv["wins"] += 1
+    pv["coins"] += 1
+    pv["partidas"] += 1
+    pp["losses"] += 1
+    pp["partidas"] += 1
+    salvar_ranking()
+    return pv, pp
 
 def pegar_cargos_staff(guild):
     dono = mediador = None
@@ -74,7 +106,6 @@ def pegar_cargos_staff(guild):
         if "MEDIADOR" in nome:
             mediador = r
     return dono, mediador
-
 def tem_cargo_permitido(member, guild):
     if member.id == guild.owner_id:
         return True
@@ -85,7 +116,6 @@ def tem_cargo_permitido(member, guild):
             if cargo in nome:
                 return True
     return False
-
 def crc16(payload):
     crc = 0xFFFF
     for b in payload.encode():
@@ -124,26 +154,21 @@ class BotoesLiberarPix(discord.ui.View):
             return
         chave_pix = None
         nome_med = "MEDIADOR"
-        # 1. Tenta a chave do mediador sorteado
         if med and med.id in chaves_mediadores:
             chave_pix = chaves_mediadores[med.id]["chave"]
             nome_med = chaves_mediadores[med.id]["nome"]
-        # 2. Tenta a chave de quem clicou no botão (se for mediador)
         elif interaction.user.id in chaves_mediadores:
             chave_pix = chaves_mediadores[interaction.user.id]["chave"]
             nome_med = chaves_mediadores[interaction.user.id]["nome"]
-        # 3. Tenta a última chave configurada
         elif ultimo_mediador_id and ultimo_mediador_id in chaves_mediadores:
             chave_pix = chaves_mediadores[ultimo_mediador_id]["chave"]
             nome_med = chaves_mediadores[ultimo_mediador_id]["nome"]
-        # 4. Tenta QUALQUER chave salva (pra não travar)
         elif chaves_mediadores:
             primeiro_id = list(chaves_mediadores.keys())[0]
             chave_pix = chaves_mediadores[primeiro_id]["chave"]
             nome_med = chaves_mediadores[primeiro_id]["nome"]
-
         if not chave_pix:
-            await interaction.followup.send(f"⚠️ Mediador ainda não configurou a chave!\nMediador da partida: {med.mention if med else 'nenhum'}\nChaves salvas no bot: {len(chaves_mediadores)}\n\nVai em qualquer canal e digita:\n`!chave SUA-CHAVE-PIX`\nDepois digita `!minhachave` pra confirmar que salvou!", ephemeral=False)
+            await interaction.followup.send(f"⚠️ Mediador ainda não configurou a chave!\nDigita `!chave SUA-CHAVE-PIX`", ephemeral=False)
             return
         pix = gerar_pix(chave_pix, float(self.fila['valor']), nome=nome_med)
         qr_url = gerar_qr_url(pix)
@@ -186,7 +211,7 @@ class BotoesFilaMediadores(discord.ui.View):
         try:
             if not tem_cargo_permitido(interaction.user, interaction.guild):
                 cargos = [r.name for r in getattr(interaction.user, "roles", [])]
-                await interaction.followup.send(f"❌ Sem permissão! Cargos que o bot viu: {', '.join(cargos) if cargos else 'nenhum'}", ephemeral=True)
+                await interaction.followup.send(f"❌ Sem permissão! Cargos: {', '.join(cargos) if cargos else 'nenhum'}", ephemeral=True)
                 return
             if any(m.id == interaction.user.id for m in lista_mediadores):
                 await interaction.followup.send("Você já está na fila!", ephemeral=True)
@@ -339,15 +364,7 @@ async def atualizar_painel(interaction, fila, msg_id):
         pass
 
 async def criar_canal_partida(guild, fila_original, jogadores):
-    # COPIA a fila pra não apagar os jogadores quando limpar o painel
-    fila = {
-        "modo": fila_original["modo"],
-        "valor": fila_original["valor"],
-        "jogadores": list(jogadores),
-        "numero": random.randint(10000, 99999),
-        "resultado": None,
-        "vencedor": None
-    }
+    fila = {"modo": fila_original["modo"], "valor": fila_original["valor"], "jogadores": list(jogadores), "numero": random.randint(10000, 99999), "resultado": None, "vencedor": None, "ranking_aplicado": False}
     dono, mediador_cargo = pegar_cargos_staff(guild)
     nome_canal = f"aguardando-{fila['numero']}"
     mediador_escolhido = None
@@ -386,29 +403,42 @@ async def criar_canal_partida(guild, fila_original, jogadores):
         embed.add_field(name="Mediador", value="Nenhum mediador na fila! Entra na `# fila-mediadores`", inline=False)
     await canal.send(content=f"{ping}Nova partida fechada!", embed=embed, view=BotoesConfirmar(fila))
 
+# ===== .v .d .aux COM RANKING =====
 @bot.command(name="v")
 async def cmd_v(ctx, vencedor: discord.Member = None):
     fila = partidas_por_canal.get(ctx.channel.id)
     if not fila:
-        await ctx.send("❌ Esse comando só funciona dentro do canal da partida (`aguardando-` / `fila-`)!", delete_after=5)
+        await ctx.send("❌ Esse comando só funciona dentro do canal da partida!", delete_after=5)
         return
     if not tem_cargo_permitido(ctx.author, ctx.guild):
         await ctx.send("❌ Só o mediador / staff pode declarar o vencedor!", delete_after=5)
         return
     if not vencedor:
-        await ctx.send("Uso: `.v @jogador` - Ex: `.v @vivodewin7`", delete_after=10)
+        await ctx.send("Uso: `.v @jogador`", delete_after=10)
         return
     if vencedor not in fila["jogadores"]:
-        await ctx.send(f"❌ {vencedor.mention} não está nessa partida! Jogadores: {' x '.join([j.mention for j in fila['jogadores']])}", delete_after=5)
+        await ctx.send(f"❌ {vencedor.mention} não está nessa partida!", delete_after=5)
         return
+    if fila.get("ranking_aplicado") and fila.get("vencedor"):
+        antigo_v = fila["vencedor"]
+        antigo_p = [j for j in fila["jogadores"] if j.id != antigo_v.id][0]
+        if antigo_v.id in ranking:
+            ranking[antigo_v.id]["wins"] = max(0, ranking[antigo_v.id]["wins"] - 1)
+            ranking[antigo_v.id]["coins"] = max(0, ranking[antigo_v.id]["coins"] - 1)
+            ranking[antigo_v.id]["partidas"] = max(0, ranking[antigo_v.id]["partidas"] - 1)
+        if antigo_p.id in ranking:
+            ranking[antigo_p.id]["losses"] = max(0, ranking[antigo_p.id]["losses"] - 1)
+            ranking[antigo_p.id]["partidas"] = max(0, ranking[antigo_p.id]["partidas"] - 1)
     fila["resultado"] = "vitoria"
     fila["vencedor"] = vencedor
     perdedor = [j for j in fila["jogadores"] if j.id != vencedor.id][0]
+    pv, pp = adicionar_vitoria(vencedor, perdedor)
+    fila["ranking_aplicado"] = True
     embed = discord.Embed(title="🏆 Vitória Declarada!", color=0x00ff00)
     embed.add_field(name="Vencedor", value=f"{vencedor.mention}", inline=False)
     embed.add_field(name="Perdedor", value=f"{perdedor.mention}", inline=False)
     embed.add_field(name="Valor", value=formatar_valor(fila["valor"]), inline=False)
-    embed.add_field(name="Mediador", value=f"{ctx.author.mention} declarou a vitória", inline=False)
+    embed.add_field(name="Recompensa", value=f"🪙 +1 Coin pro {vencedor.mention}!\nAgora ele tem **{pv['coins']} coins** e **{pv['wins']} wins**!", inline=False)
     embed.add_field(name="Próximo passo", value="Mediador, digita `.aux` pra finalizar e fechar o canal!", inline=False)
     await ctx.send(embed=embed)
 
@@ -421,12 +451,24 @@ async def cmd_d(ctx):
     if not tem_cargo_permitido(ctx.author, ctx.guild):
         await ctx.send("❌ Só o mediador / staff pode usar esse comando!", delete_after=5)
         return
+    if fila.get("ranking_aplicado") and fila.get("vencedor"):
+        antigo_v = fila["vencedor"]
+        antigo_p = [j for j in fila["jogadores"] if j.id != antigo_v.id][0]
+        if antigo_v.id in ranking:
+            ranking[antigo_v.id]["wins"] = max(0, ranking[antigo_v.id]["wins"] - 1)
+            ranking[antigo_v.id]["coins"] = max(0, ranking[antigo_v.id]["coins"] - 1)
+            ranking[antigo_v.id]["partidas"] = max(0, ranking[antigo_v.id]["partidas"] - 1)
+        if antigo_p.id in ranking:
+            ranking[antigo_p.id]["losses"] = max(0, ranking[antigo_p.id]["losses"] - 1)
+            ranking[antigo_p.id]["partidas"] = max(0, ranking[antigo_p.id]["partidas"] - 1)
+        salvar_ranking()
     fila["resultado"] = "derrota"
     fila["vencedor"] = None
+    fila["ranking_aplicado"] = False
     embed = discord.Embed(title="❌ Partida sem vencedor", color=0xff0000)
     embed.add_field(name="Jogadores", value=" x ".join([j.mention for j in fila["jogadores"]]), inline=False)
     embed.add_field(name="Valor", value=formatar_valor(fila["valor"]), inline=False)
-    embed.add_field(name="Motivo", value="Derrota / Empate / Cancelamento - Reembolso / Sem vencedor", inline=False)
+    embed.add_field(name="Recompensa", value="Ninguém ganhou coin nessa!", inline=False)
     embed.add_field(name="Próximo passo", value="Mediador, digita `.aux` pra finalizar e fechar o canal!", inline=False)
     await ctx.send(embed=embed)
 
@@ -440,14 +482,16 @@ async def cmd_aux(ctx):
         await ctx.send("❌ Só o mediador / staff pode finalizar!", delete_after=5)
         return
     if not fila.get("resultado"):
-        await ctx.send("⚠️ Antes de `.aux` tu precisa usar `.v @vencedor` ou `.d`!\nEx: `.v @vivodewin7` depois `.aux`", delete_after=10)
+        await ctx.send("⚠️ Antes de `.aux` tu precisa usar `.v @vencedor` ou `.d`!", delete_after=10)
         return
     if fila["resultado"] == "vitoria":
         vencedor = fila["vencedor"]
+        pv = pegar_perfil(vencedor)
         embed = discord.Embed(title="✅ Partida Finalizada!", color=0x00ff00)
         embed.add_field(name="🏆 Vencedor", value=f"{vencedor.mention}", inline=False)
         embed.add_field(name="Modo", value=f"{fila['modo']} | Gelo Normal", inline=False)
         embed.add_field(name="Valor", value=formatar_valor(fila["valor"]), inline=False)
+        embed.add_field(name="Histórico do Vencedor", value=f"🏆 {pv['wins']} Wins | ❌ {pv['losses']} Losses | 🪙 {pv['coins']} Coins", inline=False)
         embed.add_field(name="Mediador", value=f"{ctx.author.mention} finalizou", inline=False)
         await ctx.send(embed=embed)
     else:
@@ -465,6 +509,86 @@ async def cmd_aux(ctx):
         await ctx.channel.delete(reason="Partida finalizada com .aux")
     except:
         pass
+
+# ===== RANKING - !ranking / !r =====
+@bot.command(name="ranking", aliases=["r"])
+async def cmd_ranking(ctx):
+    if not ranking:
+        await ctx.send("📊 Ninguém jogou ainda! Seja o primeiro a ganhar uma coin!")
+        return
+    ordenado = sorted(ranking.items(), key=lambda x: (x[1]["wins"], x[1]["coins"]), reverse=True)[:10]
+    texto = ""
+    medalhas = ["🥇", "🥈", "🥉"]
+    for i, (uid, dados) in enumerate(ordenado):
+        medalha = medalhas[i] if i < 3 else f"{i+1}."
+        winrate = 0
+        if dados["partidas"] > 0:
+            winrate = int(dados["wins"] / dados["partidas"] * 100)
+        texto += f"{medalha} **{dados['nome']}** - 🏆 {dados['wins']}W | ❌ {dados['losses']}L | 🪙 {dados['coins']} coins | {winrate}% WR\n"
+    embed = discord.Embed(title="🏆 RANKING - TOP 10", color=0xffd700)
+    embed.add_field(name="Classificação por Wins", value=texto, inline=False)
+    embed.set_footer(text="Use !p @pessoa pra ver o perfil completo")
+    await ctx.send(embed=embed)
+
+# ===== PERFIL - !perfil / !p =====
+@bot.command(name="perfil", aliases=["p"])
+async def cmd_perfil(ctx, membro: discord.Member = None):
+    alvo = membro or ctx.author
+    dados = pegar_perfil(alvo)
+    salvar_ranking()
+    winrate = 0
+    if dados["partidas"] > 0:
+        winrate = int(dados["wins"] / dados["partidas"] * 100)
+    embed = discord.Embed(title=f"📊 Perfil de {alvo.display_name}", color=0x5865F2)
+    embed.set_thumbnail(url=alvo.display_avatar.url if alvo.display_avatar else None)
+    embed.add_field(name="🏆 Wins", value=str(dados["wins"]), inline=True)
+    embed.add_field(name="❌ Losses", value=str(dados["losses"]), inline=True)
+    embed.add_field(name="🪙 Coins", value=str(dados["coins"]), inline=True)
+    embed.add_field(name="🎮 Partidas", value=str(dados["partidas"]), inline=True)
+    embed.add_field(name="📈 Win Rate", value=f"{winrate}%", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command(name="coins")
+async def cmd_coins(ctx, membro: discord.Member = None):
+    alvo = membro or ctx.author
+    dados = pegar_perfil(alvo)
+    salvar_ranking()
+    await ctx.send(f"🪙 {alvo.mention} tem **{dados['coins']} coins** | 🏆 {dados['wins']} wins | ❌ {dados['losses']} losses")
+
+@bot.command(name="addcoin")
+async def cmd_addcoin(ctx, membro: discord.Member = None, qtd: int = 1):
+    if not tem_cargo_permitido(ctx.author, ctx.guild):
+        await ctx.send("❌ Só staff pode dar coin!", delete_after=5)
+        return
+    if not membro:
+        await ctx.send("Uso: `!addcoin @pessoa 5`", delete_after=5)
+        return
+    dados = pegar_perfil(membro)
+    dados["coins"] += qtd
+    salvar_ranking()
+    await ctx.send(f"✅ {membro.mention} ganhou +{qtd} coins! Agora tem {dados['coins']} coins! 🪙")
+
+@bot.command(name="removecoin")
+async def cmd_removecoin(ctx, membro: discord.Member = None, qtd: int = 1):
+    if not tem_cargo_permitido(ctx.author, ctx.guild):
+        await ctx.send("❌ Só staff pode tirar coin!", delete_after=5)
+        return
+    if not membro:
+        await ctx.send("Uso: `!removecoin @pessoa 1`", delete_after=5)
+        return
+    dados = pegar_perfil(membro)
+    dados["coins"] = max(0, dados["coins"] - qtd)
+    salvar_ranking()
+    await ctx.send(f"✅ {membro.mention} perdeu -{qtd} coins! Agora tem {dados['coins']} coins!")
+
+@bot.command(name="resetranking")
+async def cmd_resetranking(ctx):
+    if ctx.author.id != ctx.guild.owner_id and not tem_cargo_permitido(ctx.author, ctx.guild):
+        await ctx.send("❌ Só staff pode resetar!", delete_after=5)
+        return
+    ranking.clear()
+    salvar_ranking()
+    await ctx.send("🧹 Ranking resetado!")
 
 async def criar_paineis(ctx, modo):
     try:
@@ -490,15 +614,13 @@ async def cmd_fila_mediadores(ctx):
     embed.add_field(name=f"0/{MAX_MEDIADORES_FILA} mediador(es) na fila", value="Nenhum mediador na fila", inline=False)
     await ctx.send(embed=embed, view=BotoesFilaMediadores())
 
-# ===== COMANDO CHAVE CORRIGIDO =====
 @bot.command(name="chave")
 async def cmd_chave(ctx, *, nova_chave: str = None):
-    # Agora funciona em QUALQUER canal, sem travar
     if not tem_cargo_permitido(ctx.author, ctx.guild):
         await ctx.send("❌ Só MEDIADOR / DONO / CEO / SUP / DEV pode configurar!", delete_after=5)
         return
     if not nova_chave:
-        await ctx.send("Uso: `!chave SUA-CHAVE-PIX`\nEx: `!chave 11999999999` ou `!chave meuemail@gmail.com`", delete_after=10)
+        await ctx.send("Uso: `!chave SUA-CHAVE-PIX`", delete_after=10)
         return
     nova_chave = nova_chave.strip()
     global ultimo_mediador_id
@@ -509,15 +631,15 @@ async def cmd_chave(ctx, *, nova_chave: str = None):
         await ctx.message.delete()
     except:
         pass
-    await ctx.send(f"✅ {ctx.author.mention} sua chave PIX foi salva!\nChave: `{nova_chave}`\nTotal de chaves salvas: {len(chaves_mediadores)}\nAgora pode clicar em **Liberar Pix** que vai aparecer!", delete_after=15)
+    await ctx.send(f"✅ {ctx.author.mention} sua chave PIX foi salva!\nChave: `{nova_chave}`", delete_after=15)
 
 @bot.command(name="minhachave")
 async def cmd_minhachave(ctx):
     if ctx.author.id in chaves_mediadores:
         dados = chaves_mediadores[ctx.author.id]
-        await ctx.send(f"✅ {ctx.author.mention} tua chave tá salva!\nChave: `{dados['chave']}`\nNome: {dados['nome']}", delete_after=15)
+        await ctx.send(f"✅ {ctx.author.mention} tua chave tá salva!\nChave: `{dados['chave']}`", delete_after=15)
     else:
-        await ctx.send(f"❌ {ctx.author.mention} tu ainda NÃO tem chave salva!\nDigita: `!chave SUA-CHAVE-PIX`\nChaves salvas no bot: {len(chaves_mediadores)}", delete_after=10)
+        await ctx.send(f"❌ {ctx.author.mention} tu ainda NÃO tem chave salva!\nDigita: `!chave SUA-CHAVE-PIX`", delete_after=10)
     try:
         await ctx.message.delete()
     except:
@@ -560,7 +682,7 @@ async def clear_all(ctx):
 @bot.event
 async def on_ready():
     print(f"Bot logado como {bot.user}")
-    print(f"Chaves carregadas: {len(chaves_mediadores)} - {list(chaves_mediadores.values())}")
+    print(f"Chaves: {len(chaves_mediadores)} | Ranking: {len(ranking)} jogadores")
     bot.add_view(BotoesFilaMediadores())
 
 bot.run(os.getenv("DISCORD_TOKEN"))

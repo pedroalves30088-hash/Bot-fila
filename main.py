@@ -1,11 +1,12 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import os
 import random
 import asyncio
 import urllib.parse
 import re
 import json
+from datetime import datetime, date
 from flask import Flask
 from threading import Thread
 
@@ -28,6 +29,21 @@ MAX_MEDIADORES_FILA = 2
 CARGOS_PERMITIDOS = ["MEDIADOR", "DONO", "CEO", "SUP", "DEV"]
 ARQUIVO_CHAVES = "chaves.json"
 ARQUIVO_RANKING = "ranking.json"
+ARQUIVO_DIARIO = "destaque_diario.json"
+
+LOJA = [
+    {"id": "magnata", "nome": "CARGO: MAGNATA", "preco": 5, "tipo": "cargo", "cargo_nome": "MAGNATA"},
+    {"id": "rei_ump", "nome": "CARGO: REI DA UMP", "preco": 10, "tipo": "cargo", "cargo_nome": "REI DA UMP"},
+    {"id": "dono_cabare", "nome": "CARGO: DONO CABARÉ", "preco": 10, "tipo": "cargo", "cargo_nome": "DONO CABARÉ"},
+    {"id": "vivo_win", "nome": "CARGO: VIVO NA WIN", "preco": 10, "tipo": "cargo", "cargo_nome": "VIVO NA WIN"},
+    {"id": "blessed", "nome": "CARGO: BLESSED", "preco": 10, "tipo": "cargo", "cargo_nome": "BLESSED"},
+    {"id": "mira_morango", "nome": "CARGO: MIRA MORANGO", "preco": 10, "tipo": "cargo", "cargo_nome": "MIRA MORANGO"},
+    {"id": "passe_elite", "nome": "PASSE DE ELITE", "preco": 50, "tipo": "cargo", "cargo_nome": "PASSE DE ELITE"},
+    {"id": "pix_3", "nome": "3$ NO PIX", "preco": 40, "tipo": "pix", "valor_pix": 3},
+    {"id": "pix_5", "nome": "5$ NO PIX", "preco": 55, "tipo": "pix", "valor_pix": 5},
+    {"id": "pix_10", "nome": "10$ NO PIX", "preco": 85, "tipo": "pix", "valor_pix": 10},
+    {"id": "pix_20", "nome": "20$ NO PIX", "preco": 150, "tipo": "pix", "valor_pix": 20},
+]
 
 def formatar_valor(v):
     if v < 1:
@@ -41,44 +57,55 @@ filas = {}
 ultimo_mediador_id = None
 lista_mediadores = []
 partidas_por_canal = {}
+ultimo_destaque_publicado = None
 
-# ===== CHAVES =====
 def carregar_chaves():
     try:
         if os.path.exists(ARQUIVO_CHAVES):
             with open(ARQUIVO_CHAVES, "r", encoding="utf-8") as f:
-                dados = json.load(f)
-                return {int(k): v for k, v in dados.items()}
-    except Exception as e:
-        print(f"Erro carregar chaves: {e}")
+                return {int(k): v for k, v in json.load(f).items()}
+    except: pass
     return {}
 def salvar_chaves():
     try:
         with open(ARQUIVO_CHAVES, "w", encoding="utf-8") as f:
             json.dump(chaves_mediadores, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Erro salvar chaves: {e}")
+    except: pass
 chaves_mediadores = carregar_chaves()
 if chaves_mediadores:
     ultimo_mediador_id = list(chaves_mediadores.keys())[-1]
 
-# ===== RANKING + COINS =====
 def carregar_ranking():
     try:
         if os.path.exists(ARQUIVO_RANKING):
             with open(ARQUIVO_RANKING, "r", encoding="utf-8") as f:
-                dados = json.load(f)
-                return {int(k): v for k, v in dados.items()}
-    except Exception as e:
-        print(f"Erro carregar ranking: {e}")
+                return {int(k): v for k, v in json.load(f).items()}
+    except: pass
     return {}
 def salvar_ranking():
     try:
         with open(ARQUIVO_RANKING, "w", encoding="utf-8") as f:
             json.dump(ranking, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Erro salvar ranking: {e}")
+    except: pass
 ranking = carregar_ranking()
+
+def carregar_diario():
+    try:
+        if os.path.exists(ARQUIVO_DIARIO):
+            with open(ARQUIVO_DIARIO, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+                return {"data": dados.get("data", str(date.today())), "wins": {int(k): v for k, v in dados.get("wins", {}).items()}, "nomes": dados.get("nomes", {}), "top1_id": dados.get("top1_id")}
+    except: pass
+    return {"data": str(date.today()), "wins": {}, "nomes": {}, "top1_id": None}
+def salvar_diario():
+    try:
+        with open(ARQUIVO_DIARIO, "w", encoding="utf-8") as f:
+            json.dump({"data": diario["data"], "wins": diario["wins"], "nomes": diario["nomes"], "top1_id": diario["top1_id"]}, f, ensure_ascii=False, indent=2)
+    except: pass
+diario = carregar_diario()
+if diario["data"] != str(date.today()):
+    diario = {"data": str(date.today()), "wins": {}, "nomes": {}, "top1_id": diario.get("top1_id")}
+    salvar_diario()
 
 def pegar_perfil(user):
     if user.id not in ranking:
@@ -94,6 +121,13 @@ def adicionar_vitoria(vencedor, perdedor):
     pv["partidas"] += 1
     pp["losses"] += 1
     pp["partidas"] += 1
+    if diario["data"] != str(date.today()):
+        diario["data"] = str(date.today())
+        diario["wins"] = {}
+        diario["nomes"] = {}
+    diario["wins"][vencedor.id] = diario["wins"].get(vencedor.id, 0) + 1
+    diario["nomes"][str(vencedor.id)] = vencedor.display_name
+    salvar_diario()
     salvar_ranking()
     return pv, pp
 
@@ -109,8 +143,7 @@ def pegar_cargos_staff(guild):
 def tem_cargo_permitido(member, guild):
     if member.id == guild.owner_id:
         return True
-    roles = getattr(member, "roles", [])
-    for r in roles:
+    for r in getattr(member, "roles", []):
         nome = r.name.upper()
         for cargo in CARGOS_PERMITIDOS:
             if cargo in nome:
@@ -140,6 +173,112 @@ def gerar_pix(chave_pix, valor, nome="MEDIADOR", cidade="SAO PAULO"):
 def gerar_qr_url(pix_copia_cola):
     dados = urllib.parse.quote(pix_copia_cola)
     return f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={dados}"
+
+class SelectLoja(discord.ui.Select):
+    def __init__(self):
+        options = []
+        for item in LOJA:
+            emoji = "👑" if item["tipo"] == "cargo" else "💸"
+            options.append(discord.SelectOption(label=item["nome"], description=f"Valor: {item['preco']} Coins", value=item["id"], emoji=emoji))
+        super().__init__(placeholder="Selecione o item que deseja comprar", min_values=1, max_values=1, options=options, custom_id="select_loja")
+    async def callback(self, interaction: discord.Interaction):
+        item_id = self.values[0]
+        item = next((x for x in LOJA if x["id"] == item_id), None)
+        if not item:
+            await interaction.response.send_message("Item não encontrado!", ephemeral=True)
+            return
+        perfil = pegar_perfil(interaction.user)
+        if perfil["coins"] < item["preco"]:
+            await interaction.response.send_message(f"❌ Tu tem **{perfil['coins']} coins** e precisa de **{item['preco']} coins** pra comprar **{item['nome']}**!\nGanha 1 coin por vitória! Use `!p` pra ver teu saldo.", ephemeral=True)
+            return
+        if item["tipo"] == "cargo":
+            cargo = discord.utils.get(interaction.guild.roles, name=item["cargo_nome"])
+            if not cargo:
+                for r in interaction.guild.roles:
+                    if item["cargo_nome"].upper() in r.name.upper():
+                        cargo = r
+                        break
+            if not cargo:
+                await interaction.response.send_message(f"❌ Cargo **{item['cargo_nome']}** não existe no servidor! Pede pro dono criar o cargo com esse nome exato!", ephemeral=True)
+                return
+            if cargo in interaction.user.roles:
+                await interaction.response.send_message(f"❌ Tu já tem o cargo **{item['nome']}**!", ephemeral=True)
+                return
+            perfil["coins"] -= item["preco"]
+            salvar_ranking()
+            try:
+                await interaction.user.add_roles(cargo, reason=f"Comprou na lojinha por {item['preco']} coins")
+            except Exception as e:
+                perfil["coins"] += item["preco"]
+                salvar_ranking()
+                await interaction.response.send_message(f"❌ Não consegui te dar o cargo! Erro: {e}\nPede pro dono colocar meu cargo acima dos cargos da loja!", ephemeral=True)
+                return
+            await interaction.response.send_message(f"✅ **Compra confirmada!**\nTu comprou **{item['nome']}** por **{item['preco']} coins**!\nSaldo restante: **{perfil['coins']} coins** 🪙", ephemeral=False)
+        else:
+            perfil["coins"] -= item["preco"]
+            salvar_ranking()
+            await interaction.response.send_message(f"✅ **Pedido de PIX criado!**\nTu comprou **{item['nome']}** por **{item['preco']} coins**!\nSaldo restante: **{perfil['coins']} coins**\n\n⏳ **Aguarde um staff te chamar pra pagar!**\nManda tua chave PIX pra um mediador/dono!", ephemeral=False)
+            for canal in interaction.guild.text_channels:
+                if "log" in canal.name.lower() or "pagamento" in canal.name.lower() or "staff" in canal.name.lower():
+                    try:
+                        embed = discord.Embed(title="💸 NOVO PEDIDO DE PIX - LOJINHA", color=0x00ff00)
+                        embed.add_field(name="Pessoa", value=f"{interaction.user.mention} ({interaction.user.display_name})", inline=False)
+                        embed.add_field(name="Item", value=item["nome"], inline=False)
+                        embed.add_field(name="Preço pago", value=f"{item['preco']} coins", inline=False)
+                        embed.add_field(name="Valor a pagar", value=f"R$ {item['valor_pix']}", inline=False)
+                        embed.add_field(name="Saldo restante", value=f"{perfil['coins']} coins", inline=False)
+                        await canal.send(embed=embed)
+                        break
+                    except: pass
+
+class ViewLojinha(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(SelectLoja())
+
+def embed_lojinha():
+    embed = discord.Embed(title="🛒 LOJINHA", color=0x5865F2)
+    embed.add_field(name="Como funciona?", value="O valor é em pontos!", inline=False)
+    embed.add_field(name="Como conseguir pontos?", value="A cada vitória você ganha **1 COIN**\nPara ver seu saldo use `.p` ou veja diretamente no ranking.", inline=False)
+    texto = ""
+    for item in LOJA:
+        texto += f"{item['nome']} - {item['preco']} COINS\n"
+    embed.add_field(name="Produtos disponíveis:", value=texto, inline=False)
+    embed.set_footer(text="Selecione abaixo o item que deseja comprar")
+    return embed
+
+class ViewRankingPanel(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="Ranking", style=discord.ButtonStyle.blurple, emoji="🏆", custom_id="btn_ranking_panel")
+    async def btn_ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        if not ranking:
+            await interaction.followup.send("📊 Ninguém jogou ainda!", ephemeral=True)
+            return
+        ordenado = sorted(ranking.items(), key=lambda x: (x[1]["wins"], x[1]["coins"]), reverse=True)[:10]
+        texto = ""
+        medalhas = ["🥇", "🥈", "🥉"]
+        for i, (uid, dados) in enumerate(ordenado):
+            medalha = medalhas[i] if i < 3 else f"{i+1}."
+            winrate = int(dados["wins"] / dados["partidas"] * 100) if dados["partidas"] > 0 else 0
+            texto += f"{medalha} **{dados['nome']}** - 🏆 {dados['wins']}W | ❌ {dados['losses']}L | 🪙 {dados['coins']} coins | {winrate}% WR\n"
+        embed = discord.Embed(title="🏆 RANKING - TOP 10", color=0xffd700)
+        embed.add_field(name="Classificação por Wins", value=texto, inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    @discord.ui.button(label="Meu perfil", style=discord.ButtonStyle.green, emoji="👤", custom_id="btn_perfil_panel")
+    async def btn_perfil(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        dados = pegar_perfil(interaction.user)
+        salvar_ranking()
+        winrate = int(dados["wins"] / dados["partidas"] * 100) if dados["partidas"] > 0 else 0
+        embed = discord.Embed(title=f"📊 Perfil de {interaction.user.display_name}", color=0x5865F2)
+        embed.add_field(name="🏆 Wins", value=str(dados["wins"]), inline=True)
+        embed.add_field(name="❌ Losses", value=str(dados["losses"]), inline=True)
+        embed.add_field(name="🪙 Coins", value=str(dados["coins"]), inline=True)
+        embed.add_field(name="🎮 Partidas", value=str(dados["partidas"]), inline=True)
+        embed.add_field(name="📈 Win Rate", value=f"{winrate}%", inline=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 class BotoesLiberarPix(discord.ui.View):
     def __init__(self, fila_info):
@@ -182,8 +321,7 @@ class BotoesLiberarPix(discord.ui.View):
         button.disabled = True
         try:
             await interaction.message.edit(view=self)
-        except:
-            pass
+        except: pass
 
 class BotoesFilaMediadores(discord.ui.View):
     def __init__(self):
@@ -200,59 +338,40 @@ class BotoesFilaMediadores(discord.ui.View):
             embed.add_field(name="🔒 Fila cheia", value="Um mediador precisa sair para abrir vaga.", inline=False)
         try:
             await interaction.message.edit(embed=embed, view=self)
-        except Exception as e:
-            print(f"Erro atualizar: {e}")
+        except: pass
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.blurple, custom_id="med_entrar")
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-        except:
-            pass
-        try:
-            if not tem_cargo_permitido(interaction.user, interaction.guild):
-                cargos = [r.name for r in getattr(interaction.user, "roles", [])]
-                await interaction.followup.send(f"❌ Sem permissão! Cargos: {', '.join(cargos) if cargos else 'nenhum'}", ephemeral=True)
-                return
-            if any(m.id == interaction.user.id for m in lista_mediadores):
-                await interaction.followup.send("Você já está na fila!", ephemeral=True)
-                return
-            if len(lista_mediadores) >= MAX_MEDIADORES_FILA:
-                await interaction.followup.send("Fila cheia!", ephemeral=True)
-                return
-            lista_mediadores.append(interaction.user)
-            await self.atualizar(interaction)
-            await interaction.followup.send("✅ Você entrou na fila de mediadores!", ephemeral=True)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            try:
-                await interaction.followup.send(f"Erro: {e}", ephemeral=True)
-            except:
-                pass
+        except: pass
+        if not tem_cargo_permitido(interaction.user, interaction.guild):
+            await interaction.followup.send("❌ Sem permissão!", ephemeral=True)
+            return
+        if any(m.id == interaction.user.id for m in lista_mediadores):
+            await interaction.followup.send("Você já está na fila!", ephemeral=True)
+            return
+        if len(lista_mediadores) >= MAX_MEDIADORES_FILA:
+            await interaction.followup.send("Fila cheia!", ephemeral=True)
+            return
+        lista_mediadores.append(interaction.user)
+        await self.atualizar(interaction)
+        await interaction.followup.send("✅ Você entrou na fila de mediadores!", ephemeral=True)
     @discord.ui.button(label="Sair", style=discord.ButtonStyle.red, custom_id="med_sair")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-        except:
-            pass
+        except: pass
         lista_mediadores[:] = [m for m in lista_mediadores if m.id != interaction.user.id]
         await self.atualizar(interaction)
-        try:
-            await interaction.followup.send("Você saiu da fila!", ephemeral=True)
-        except:
-            pass
+        await interaction.followup.send("Você saiu da fila!", ephemeral=True)
     @discord.ui.button(label="Limpar Fila", style=discord.ButtonStyle.red, custom_id="med_limpar")
     async def limpar(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-        except:
-            pass
+        except: pass
         lista_mediadores.clear()
         await self.atualizar(interaction)
-        try:
-            await interaction.followup.send("Fila limpa!", ephemeral=True)
-        except:
-            pass
+        await interaction.followup.send("Fila limpa!", ephemeral=True)
 
 class BotoesConfirmar(discord.ui.View):
     def __init__(self, fila_info):
@@ -281,8 +400,7 @@ class BotoesConfirmar(discord.ui.View):
             self.fila["numero"] = numero
         try:
             await canal.edit(name=f"fila-{numero}")
-        except Exception as e:
-            print(f"Erro renomear: {e}")
+        except: pass
         med = self.fila.get("mediador_escolhido")
         embed = discord.Embed(title="✅ Partida Confirmada", color=0x00ff00)
         embed.add_field(name="Modo", value=f"{self.fila['modo']} | Gelo Normal", inline=False)
@@ -298,8 +416,7 @@ class BotoesConfirmar(discord.ui.View):
             child.disabled = True
         try:
             await interaction.message.edit(view=self)
-        except:
-            pass
+        except: pass
     @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.red, custom_id="cancelar")
     async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=False)
@@ -307,8 +424,7 @@ class BotoesConfirmar(discord.ui.View):
         await asyncio.sleep(5)
         try:
             await interaction.channel.delete(reason="Partida cancelada")
-        except:
-            pass
+        except: pass
 
 class BotoesFila(discord.ui.View):
     def __init__(self, msg_id):
@@ -360,8 +476,7 @@ async def atualizar_painel(interaction, fila, msg_id):
         embed.add_field(name="Valor", value=formatar_valor(fila["valor"]), inline=False)
         embed.add_field(name="Jogadores:", value=jogadores_txt, inline=False)
         await msg.edit(embed=embed, view=BotoesFila(msg_id))
-    except:
-        pass
+    except: pass
 
 async def criar_canal_partida(guild, fila_original, jogadores):
     fila = {"modo": fila_original["modo"], "valor": fila_original["valor"], "jogadores": list(jogadores), "numero": random.randint(10000, 99999), "resultado": None, "vencedor": None, "ranking_aplicado": False}
@@ -403,7 +518,6 @@ async def criar_canal_partida(guild, fila_original, jogadores):
         embed.add_field(name="Mediador", value="Nenhum mediador na fila! Entra na `# fila-mediadores`", inline=False)
     await canal.send(content=f"{ping}Nova partida fechada!", embed=embed, view=BotoesConfirmar(fila))
 
-# ===== .v .d .aux COM RANKING =====
 @bot.command(name="v")
 async def cmd_v(ctx, vencedor: discord.Member = None):
     fila = partidas_por_canal.get(ctx.channel.id)
@@ -429,6 +543,9 @@ async def cmd_v(ctx, vencedor: discord.Member = None):
         if antigo_p.id in ranking:
             ranking[antigo_p.id]["losses"] = max(0, ranking[antigo_p.id]["losses"] - 1)
             ranking[antigo_p.id]["partidas"] = max(0, ranking[antigo_p.id]["partidas"] - 1)
+        if antigo_v.id in diario["wins"]:
+            diario["wins"][antigo_v.id] = max(0, diario["wins"][antigo_v.id] - 1)
+            salvar_diario()
     fila["resultado"] = "vitoria"
     fila["vencedor"] = vencedor
     perdedor = [j for j in fila["jogadores"] if j.id != vencedor.id][0]
@@ -461,7 +578,10 @@ async def cmd_d(ctx):
         if antigo_p.id in ranking:
             ranking[antigo_p.id]["losses"] = max(0, ranking[antigo_p.id]["losses"] - 1)
             ranking[antigo_p.id]["partidas"] = max(0, ranking[antigo_p.id]["partidas"] - 1)
+        if antigo_v.id in diario["wins"]:
+            diario["wins"][antigo_v.id] = max(0, diario["wins"][antigo_v.id] - 1)
         salvar_ranking()
+        salvar_diario()
     fila["resultado"] = "derrota"
     fila["vencedor"] = None
     fila["ranking_aplicado"] = False
@@ -503,14 +623,11 @@ async def cmd_aux(ctx):
     await asyncio.sleep(10)
     try:
         del partidas_por_canal[ctx.channel.id]
-    except:
-        pass
+    except: pass
     try:
         await ctx.channel.delete(reason="Partida finalizada com .aux")
-    except:
-        pass
+    except: pass
 
-# ===== RANKING - !ranking / !r =====
 @bot.command(name="ranking", aliases=["r"])
 async def cmd_ranking(ctx):
     if not ranking:
@@ -521,24 +638,19 @@ async def cmd_ranking(ctx):
     medalhas = ["🥇", "🥈", "🥉"]
     for i, (uid, dados) in enumerate(ordenado):
         medalha = medalhas[i] if i < 3 else f"{i+1}."
-        winrate = 0
-        if dados["partidas"] > 0:
-            winrate = int(dados["wins"] / dados["partidas"] * 100)
+        winrate = int(dados["wins"] / dados["partidas"] * 100) if dados["partidas"] > 0 else 0
         texto += f"{medalha} **{dados['nome']}** - 🏆 {dados['wins']}W | ❌ {dados['losses']}L | 🪙 {dados['coins']} coins | {winrate}% WR\n"
     embed = discord.Embed(title="🏆 RANKING - TOP 10", color=0xffd700)
     embed.add_field(name="Classificação por Wins", value=texto, inline=False)
     embed.set_footer(text="Use !p @pessoa pra ver o perfil completo")
     await ctx.send(embed=embed)
 
-# ===== PERFIL - !perfil / !p =====
 @bot.command(name="perfil", aliases=["p"])
 async def cmd_perfil(ctx, membro: discord.Member = None):
     alvo = membro or ctx.author
     dados = pegar_perfil(alvo)
     salvar_ranking()
-    winrate = 0
-    if dados["partidas"] > 0:
-        winrate = int(dados["wins"] / dados["partidas"] * 100)
+    winrate = int(dados["wins"] / dados["partidas"] * 100) if dados["partidas"] > 0 else 0
     embed = discord.Embed(title=f"📊 Perfil de {alvo.display_name}", color=0x5865F2)
     embed.set_thumbnail(url=alvo.display_avatar.url if alvo.display_avatar else None)
     embed.add_field(name="🏆 Wins", value=str(dados["wins"]), inline=True)
@@ -568,33 +680,134 @@ async def cmd_addcoin(ctx, membro: discord.Member = None, qtd: int = 1):
     salvar_ranking()
     await ctx.send(f"✅ {membro.mention} ganhou +{qtd} coins! Agora tem {dados['coins']} coins! 🪙")
 
-@bot.command(name="removecoin")
-async def cmd_removecoin(ctx, membro: discord.Member = None, qtd: int = 1):
-    if not tem_cargo_permitido(ctx.author, ctx.guild):
-        await ctx.send("❌ Só staff pode tirar coin!", delete_after=5)
-        return
-    if not membro:
-        await ctx.send("Uso: `!removecoin @pessoa 1`", delete_after=5)
-        return
-    dados = pegar_perfil(membro)
-    dados["coins"] = max(0, dados["coins"] - qtd)
-    salvar_ranking()
-    await ctx.send(f"✅ {membro.mention} perdeu -{qtd} coins! Agora tem {dados['coins']} coins!")
+@bot.command(name="lojinha", aliases=["loja", "shop"])
+async def cmd_lojinha(ctx):
+    try:
+        await ctx.message.delete()
+    except: pass
+    await ctx.send(embed=embed_lojinha(), view=ViewLojinha())
 
-@bot.command(name="resetranking")
-async def cmd_resetranking(ctx):
-    if ctx.author.id != ctx.guild.owner_id and not tem_cargo_permitido(ctx.author, ctx.guild):
-        await ctx.send("❌ Só staff pode resetar!", delete_after=5)
+@bot.command(name="painelranking")
+async def cmd_painelranking(ctx):
+    try:
+        await ctx.message.delete()
+    except: pass
+    embed = discord.Embed(title="Ranking & Perfil", color=0x5865F2)
+    embed.add_field(name="", value="Seja Bem Vindo(a) ao painel de ranking e perfil do servidor!", inline=False)
+    await ctx.send(embed=embed, view=ViewRankingPanel())
+
+# ===== DESTAQUE DIARIO =====
+@bot.command(name="destaque", aliases=["destaquediario"])
+async def cmd_destaque(ctx):
+    if not diario["wins"]:
+        await ctx.send("⭐ Ninguém ganhou hoje ainda! Seja o primeiro do Destaque Diário!")
         return
-    ranking.clear()
-    salvar_ranking()
-    await ctx.send("🧹 Ranking resetado!")
+    ordenado = sorted(diario["wins"].items(), key=lambda x: x[1], reverse=True)[:10]
+    texto = ""
+    for i, (uid, wins) in enumerate(ordenado):
+        texto += f"{i+1}° - <@{uid}> | {wins} vitórias\n"
+    embed = discord.Embed(title="⭐ Destaque Diário", color=0xffd700)
+    embed.add_field(name=f"Resultados de vitórias nas últimas 24 horas - {datetime.now().strftime('%d/%m/%Y')}", value=texto, inline=False)
+    embed.add_field(name="⭐ Recompensa", value="O Top 1 do dia ganha o cargo **TOP 1 DESTAQUE** à meia-noite!", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command(name="criar_destaque")
+async def cmd_criar_destaque(ctx):
+    if not tem_cargo_permitido(ctx.author, ctx.guild):
+        await ctx.send("❌ Só staff!", delete_after=5)
+        return
+    for c in ctx.guild.text_channels:
+        if "destaque" in c.name.lower():
+            await ctx.send(f"✅ Canal já existe: {c.mention}")
+            return
+    categoria = None
+    for cat in ctx.guild.categories:
+        if "RANKING" in cat.name.upper():
+            categoria = cat
+            break
+    canal = await ctx.guild.create_text_channel("destaque-diário", category=categoria, reason="Canal destaque diario")
+    await ctx.send(f"✅ Canal criado: {canal.mention}\nAgora digita `!forcar_destaque` pra testar!")
+
+@bot.command(name="forcar_destaque")
+async def cmd_forcar_destaque(ctx):
+    if not tem_cargo_permitido(ctx.author, ctx.guild):
+        await ctx.send("❌ Só staff!", delete_after=5)
+        return
+    if not diario["wins"]:
+        await ctx.send("❌ Ninguém ganhou hoje ainda! Dá um `.v @alguem` numa partida primeiro, depois testa de novo!")
+        return
+    await publicar_destaque_diario(ctx.guild, teste=True)
+    await ctx.send("✅ Destaque publicado!")
+
+async def publicar_destaque_diario(guild, teste=False):
+    global ultimo_destaque_publicado
+    canal = None
+    for c in guild.text_channels:
+        if "destaque" in c.name.lower():
+            canal = c
+            break
+    if not canal:
+        print("❌ Canal destaque-diario NÃO ENCONTRADO!")
+        return
+    if not diario["wins"]:
+        if not teste:
+            await canal.send("⭐ Ninguém ganhou hoje! Destaque de hoje vazio.")
+        diario["data"] = str(date.today())
+        diario["wins"] = {}
+        diario["nomes"] = {}
+        salvar_diario()
+        return
+    ordenado = sorted(diario["wins"].items(), key=lambda x: x[1], reverse=True)[:10]
+    texto = ""
+    for i, (uid, wins) in enumerate(ordenado):
+        texto += f"{i+1}° - <@{uid}> | {wins} vitórias\n"
+    top1_id = ordenado[0][0]
+    cargo_destaque = discord.utils.get(guild.roles, name="TOP 1 DESTAQUE")
+    if not cargo_destaque:
+        for r in guild.roles:
+            if "DESTAQUE" in r.name.upper():
+                cargo_destaque = r
+                break
+    if cargo_destaque:
+        for m in guild.members:
+            if cargo_destaque in m.roles and m.id != top1_id:
+                try:
+                    await m.remove_roles(cargo_destaque, reason="Perdeu TOP 1 Destaque")
+                except: pass
+        novo_top = guild.get_member(top1_id)
+        if novo_top:
+            try:
+                await novo_top.add_roles(cargo_destaque, reason="Top 1 Destaque Diario")
+            except Exception as e:
+                print(f"Erro dar cargo destaque: {e}")
+    embed = discord.Embed(title="⭐ Destaque Diário", color=0xffd700)
+    embed.add_field(name="Resultados de vitórias nas últimas 24 horas", value=texto, inline=False)
+    embed.add_field(name="⭐ Recompensa", value=f"<@{top1_id}> foi Top 1 dos destaques hoje e recebeu o cargo {cargo_destaque.mention if cargo_destaque else '**TOP 1 DESTAQUE**'} como recompensa diária.", inline=False)
+    await canal.send(embed=embed)
+    diario["top1_id"] = top1_id
+    diario["data"] = str(date.today())
+    diario["wins"] = {}
+    diario["nomes"] = {}
+    salvar_diario()
+    ultimo_destaque_publicado = str(date.today())
+
+@tasks.loop(seconds=30)
+async def checar_meia_noite():
+    global ultimo_destaque_publicado
+    agora = datetime.now()
+    if agora.hour == 0 and agora.minute == 0:
+        if ultimo_destaque_publicado == str(date.today()):
+            return
+        print(f"🌙 Meia-noite! Publicando destaque diário...")
+        for guild in bot.guilds:
+            await publicar_destaque_diario(guild)
+        ultimo_destaque_publicado = str(date.today())
+        await asyncio.sleep(65)
 
 async def criar_paineis(ctx, modo):
     try:
         await ctx.message.delete()
-    except:
-        pass
+    except: pass
     for valor in reversed(VALORES):
         embed = discord.Embed(title=f"{modo} | Apostado", color=0x00ff00)
         embed.add_field(name="Modo", value=modo, inline=False)
@@ -608,8 +821,7 @@ async def criar_paineis(ctx, modo):
 async def cmd_fila_mediadores(ctx):
     try:
         await ctx.message.delete()
-    except:
-        pass
+    except: pass
     embed = discord.Embed(title="👤 Fila de Mediadores", color=0x5865F2)
     embed.add_field(name=f"0/{MAX_MEDIADORES_FILA} mediador(es) na fila", value="Nenhum mediador na fila", inline=False)
     await ctx.send(embed=embed, view=BotoesFilaMediadores())
@@ -629,8 +841,7 @@ async def cmd_chave(ctx, *, nova_chave: str = None):
     salvar_chaves()
     try:
         await ctx.message.delete()
-    except:
-        pass
+    except: pass
     await ctx.send(f"✅ {ctx.author.mention} sua chave PIX foi salva!\nChave: `{nova_chave}`", delete_after=15)
 
 @bot.command(name="minhachave")
@@ -642,8 +853,7 @@ async def cmd_minhachave(ctx):
         await ctx.send(f"❌ {ctx.author.mention} tu ainda NÃO tem chave salva!\nDigita: `!chave SUA-CHAVE-PIX`", delete_after=10)
     try:
         await ctx.message.delete()
-    except:
-        pass
+    except: pass
 
 @bot.command()
 async def painel(ctx, modo: str = "2x2 Mobile"):
@@ -673,8 +883,7 @@ async def painel4x4emu(ctx):
 async def clear_all(ctx):
     try:
         await ctx.message.delete()
-    except:
-        pass
+    except: pass
     filas.clear()
     deleted = await ctx.channel.purge(limit=100)
     await ctx.send(f"🧹 Limpado {len(deleted)} mensagens!", delete_after=5)
@@ -682,7 +891,11 @@ async def clear_all(ctx):
 @bot.event
 async def on_ready():
     print(f"Bot logado como {bot.user}")
-    print(f"Chaves: {len(chaves_mediadores)} | Ranking: {len(ranking)} jogadores")
+    print(f"Chaves: {len(chaves_mediadores)} | Ranking: {len(ranking)} | Diario: {diario}")
     bot.add_view(BotoesFilaMediadores())
+    bot.add_view(ViewLojinha())
+    bot.add_view(ViewRankingPanel())
+    if not checar_meia_noite.is_running():
+        checar_meia_noite.start()
 
 bot.run(os.getenv("DISCORD_TOKEN"))

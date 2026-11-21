@@ -31,9 +31,6 @@ def formatar_valor(v):
         return f"R$ {v}"
 
 filas = {}
-
-# ===== SALVA AS CHAVES DOS MEDIADORES =====
-# { id_do_mediador: {"chave": "...", "nome": "Nome"} }
 chaves_mediadores = {}
 ultimo_mediador_id = None
 
@@ -63,7 +60,6 @@ def campo(id, valor):
     return f"{id}{len(valor):02d}{valor}"
 
 def gerar_pix(chave, valor, nome="MEDIADOR", cidade="SAO PAULO"):
-    # Remove espaços da chave
     chave = chave.strip()
     nome = nome.upper()[:25]
     cidade = cidade.upper()[:15]
@@ -74,11 +70,10 @@ def gerar_pix(chave, valor, nome="MEDIADOR", cidade="SAO PAULO"):
     return payload_sem_crc + crc16(payload_sem_crc)
 
 def gerar_qr_url(pix_copia_cola):
-    # Usa API grátis pra gerar QR, sem precisar instalar nada no Render
     dados = urllib.parse.quote(pix_copia_cola)
     return f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={dados}"
 
-# ===== CONFIRMAR / CANCELAR =====
+# ===== CONFIRMAR / CANCELAR - QUALQUER UM PODE =====
 class BotoesConfirmar(discord.ui.View):
     def __init__(self, fila_info):
         super().__init__(timeout=None)
@@ -87,30 +82,22 @@ class BotoesConfirmar(discord.ui.View):
 
     @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green, custom_id="confirmar")
     async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=False)
         if interaction.user.id in self.confirmados:
-            await interaction.response.send_message("Você já confirmou! Esperando mais 1 pessoa...", ephemeral=True)
+            await interaction.followup.send("Você já confirmou! Esperando mais 1 pessoa...", ephemeral=True)
             return
         self.confirmados.add(interaction.user.id)
         if len(self.confirmados) < 2:
-            await interaction.response.send_message(f"✅ {interaction.user.mention} confirmou! **1/2** - Falta mais 1 pessoa confirmar...", ephemeral=False)
+            await interaction.followup.send(f"✅ {interaction.user.mention} confirmou! **1/2** - Falta mais 1 pessoa confirmar...", ephemeral=False)
             return
-
-        # 2 CONFIRMARAM - MANDA O QR CODE
         embed = discord.Embed(title="✅ PARTIDA CONFIRMADA!", color=0x00ff00)
         embed.add_field(name="Modo", value=f"{self.fila['modo']} | Full Ump Xm8", inline=False)
         embed.add_field(name="Valor", value=formatar_valor(self.fila['valor']), inline=False)
         embed.add_field(name="Jogadores", value=" x ".join([j.mention for j in self.fila['jogadores']]), inline=False)
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
-        # Tenta pegar a chave do mediador que configurou
         global ultimo_mediador_id
         mediador_id = ultimo_mediador_id
-        # Se o mediador da partida for um dos que configurou, usa ele
-        for j in self.fila.get("mediadores_da_partida", []):
-            if j.id in chaves_mediadores:
-                mediador_id = j.id
-                break
-
         if mediador_id and mediador_id in chaves_mediadores:
             info = chaves_mediadores[mediador_id]
             chave = info["chave"]
@@ -126,7 +113,6 @@ class BotoesConfirmar(discord.ui.View):
             await interaction.channel.send(embed=embed_qr)
         else:
             await interaction.channel.send("⚠️ Nenhum mediador configurou a chave ainda! Mediador, vai no canal `# 🔑 • configurar-chave` e digita `!chave SUA-CHAVE`")
-
         for child in self.children:
             child.disabled = True
         try:
@@ -136,14 +122,15 @@ class BotoesConfirmar(discord.ui.View):
 
     @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.red, custom_id="cancelar")
     async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(f"❌ {interaction.user.mention} cancelou a partida! Canal será apagado em 5 segundos...")
+        await interaction.response.defer(ephemeral=False)
+        await interaction.followup.send(f"❌ {interaction.user.mention} cancelou a partida! Canal será apagado em 5 segundos...")
         await asyncio.sleep(5)
         try:
             await interaction.channel.delete(reason="Partida cancelada")
         except:
             pass
 
-# ===== BOTÕES DA FILA =====
+# ===== BOTÕES DA FILA - CORRIGIDO SEM ERRO "NÃO RESPONDEU A TEMPO" =====
 class BotoesFila(discord.ui.View):
     def __init__(self, msg_id):
         super().__init__(timeout=None)
@@ -151,16 +138,17 @@ class BotoesFila(discord.ui.View):
 
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.green, custom_id="entrar")
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         fila = filas.get(self.msg_id)
         if not fila:
-            await interaction.response.send_message("Essa fila não existe mais!", ephemeral=True)
+            await interaction.followup.send("Essa fila não existe mais!", ephemeral=True)
             return
         user = interaction.user
         if user in fila["jogadores"]:
-            await interaction.response.send_message("Você já está na fila!", ephemeral=True)
+            await interaction.followup.send("Você já está na fila!", ephemeral=True)
             return
         if len(fila["jogadores"]) >= 2:
-            await interaction.response.send_message("Fila cheia!", ephemeral=True)
+            await interaction.followup.send("Fila cheia!", ephemeral=True)
             return
         fila["jogadores"].append(user)
         await atualizar_painel(interaction, fila, self.msg_id)
@@ -168,23 +156,23 @@ class BotoesFila(discord.ui.View):
             await criar_canal_partida(interaction.guild, fila)
             fila["jogadores"] = []
             await atualizar_painel(interaction, fila, self.msg_id)
-        await interaction.response.defer()
 
     @discord.ui.button(label="Sair", style=discord.ButtonStyle.red, custom_id="sair")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         fila = filas.get(self.msg_id)
         if fila and interaction.user in fila["jogadores"]:
             fila["jogadores"].remove(interaction.user)
             await atualizar_painel(interaction, fila, self.msg_id)
-        await interaction.response.defer()
 
     @discord.ui.button(label="Full", style=discord.ButtonStyle.blurple, custom_id="full")
     async def full(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         fila = filas.get(self.msg_id)
         if not fila:
             return
         lista = "\n".join([f"{i+1}. {j.mention}" for i, j in enumerate(fila["jogadores"])]) or "Nenhum jogador ainda"
-        await interaction.response.send_message(f"**Fila {fila['modo']} - {formatar_valor(fila['valor'])}**\n{lista}", ephemeral=True)
+        await interaction.followup.send(f"**Fila {fila['modo']} - {formatar_valor(fila['valor'])}**\n{lista}", ephemeral=True)
 
 async def atualizar_painel(interaction, fila, msg_id):
     try:
@@ -239,10 +227,9 @@ async def criar_paineis(ctx, modo):
         filas[msg.id] = {"modo": modo, "valor": valor, "jogadores": []}
         await msg.edit(view=BotoesFila(msg.id))
 
-# ===== CONFIGURAR CHAVE - SÓ NO CANAL configurar-chave =====
+# ===== CONFIGURAR CHAVE =====
 @bot.command()
 async def chave(ctx, nova_chave: str = None):
-    # Só deixa usar no canal configurar-chave ou por DONO/MEDIADOR
     if "configurar-chave" not in ctx.channel.name.lower() and "configurar" not in ctx.channel.name.lower():
         await ctx.send("❌ Use esse comando só no canal `# 🔑 • configurar-chave`!", delete_after=5)
         return
@@ -255,7 +242,7 @@ async def chave(ctx, nova_chave: str = None):
         await ctx.send("❌ Só DONO / MEDIADOR pode configurar a chave!", delete_after=5)
         return
     if not nova_chave:
-        await ctx.send("Uso: `!chave SUA-CHAVE-PIX`\nEx: `!chave 11999999999` ou `!chave meuemail@gmail.com`", delete_after=10)
+        await ctx.send("Uso: `!chave SUA-CHAVE-PIX`\nEx: `!chave 11999999999`", delete_after=10)
         return
     global ultimo_mediador_id
     chaves_mediadores[ctx.author.id] = {"chave": nova_chave, "nome": ctx.author.display_name}

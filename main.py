@@ -48,21 +48,16 @@ def pegar_cargos_staff(guild):
             mediador = r
     return dono, mediador
 
-async def e_mediador_check(member, guild):
-    # Tenta buscar o membro atualizado no servidor pra pegar os cargos certinhos
-    try:
-        m = await guild.fetch_member(member.id)
-        member = m
-    except:
-        pass
+def tem_cargo_permitido(member, guild):
     if member.id == guild.owner_id:
-        return True, [r.name for r in member.roles]
-    for r in member.roles:
+        return True
+    roles = getattr(member, "roles", [])
+    for r in roles:
         nome = r.name.upper()
         for cargo in CARGOS_PERMITIDOS:
             if cargo in nome:
-                return True, [x.name for x in member.roles]
-    return False, [x.name for x in member.roles]
+                return True
+    return False
 
 def crc16(payload):
     crc = 0xFFFF
@@ -76,12 +71,12 @@ def crc16(payload):
     return f"{crc:04X}"
 def campo(id, valor):
     return f"{id}{len(valor):02d}{valor}"
-def gerar_pix(chave, valor, nome="MEDIADOR", cidade="SAO PAULO"):
-    chave = chave.strip()
+def gerar_pix(chave_pix, valor, nome="MEDIADOR", cidade="SAO PAULO"):
+    chave_pix = chave_pix.strip()
     nome = nome.upper()[:25]
     cidade = cidade.upper()[:15]
     valor_str = f"{valor:.2f}"
-    gui = campo("00", "BR.GOV.BCB.PIX") + campo("01", chave)
+    gui = campo("00", "BR.GOV.BCB.PIX") + campo("01", chave_pix)
     merchant = campo("26", gui)
     payload_sem_crc = "000201" + merchant + campo("52", "0000") + campo("53", "986") + campo("54", valor_str) + campo("58", "BR") + campo("59", nome) + campo("60", cidade) + campo("62", campo("05", "APOSTA")) + "6304"
     return payload_sem_crc + crc16(payload_sem_crc)
@@ -105,7 +100,7 @@ class BotoesFilaMediadores(discord.ui.View):
         try:
             await interaction.message.edit(embed=embed, view=self)
         except Exception as e:
-            print(f"Erro atualizar mediadores: {e}")
+            print(f"Erro atualizar: {e}")
 
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.blurple, custom_id="med_entrar")
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -114,12 +109,9 @@ class BotoesFilaMediadores(discord.ui.View):
         except:
             pass
         try:
-            pode, cargos = await e_mediador_check(interaction.user, interaction.guild)
-            # Se o bot não conseguir ver NENHUM cargo (bug de intent), deixa entrar mesmo assim
-            if len(cargos) <= 1 and interaction.user.id != interaction.guild.owner_id:
-                pode = True
-            if not pode:
-                await interaction.followup.send(f"❌ Sem permissão! Cargos que o bot viu: {', '.join(cargos)}", ephemeral=True)
+            if not tem_cargo_permitido(interaction.user, interaction.guild):
+                cargos = [r.name for r in getattr(interaction.user, "roles", [])]
+                await interaction.followup.send(f"❌ Sem permissão! Cargos que o bot viu: {', '.join(cargos) if cargos else 'nenhum'}", ephemeral=True)
                 return
             if any(m.id == interaction.user.id for m in fila_mediadores):
                 await interaction.followup.send("Você já está na fila!", ephemeral=True)
@@ -131,7 +123,8 @@ class BotoesFilaMediadores(discord.ui.View):
             await self.atualizar(interaction)
             await interaction.followup.send("✅ Você entrou na fila de mediadores!", ephemeral=True)
         except Exception as e:
-            print(f"ERRO ENTRAR MEDIADOR: {e}")
+            import traceback
+            traceback.print_exc()
             try:
                 await interaction.followup.send(f"Erro: {e}", ephemeral=True)
             except:
@@ -186,21 +179,21 @@ class BotoesConfirmar(discord.ui.View):
             embed.add_field(name="Mediador", value=self.fila["mediador_escolhido"].mention, inline=False)
         await interaction.followup.send(embed=embed)
         med = self.fila.get("mediador_escolhido")
-        chave = None
+        chave_pix = None
         nome_med = "MEDIADOR"
         if med and med.id in chaves_mediadores:
-            chave = chaves_mediadores[med.id]["chave"]
+            chave_pix = chaves_mediadores[med.id]["chave"]
             nome_med = chaves_mediadores[med.id]["nome"]
         elif ultimo_mediador_id and ultimo_mediador_id in chaves_mediadores:
-            chave = chaves_mediadores[ultimo_mediador_id]["chave"]
+            chave_pix = chaves_mediadores[ultimo_mediador_id]["chave"]
             nome_med = chaves_mediadores[ultimo_mediador_id]["nome"]
-        if chave:
-            pix = gerar_pix(chave, float(self.fila['valor']), nome=nome_med)
+        if chave_pix:
+            pix = gerar_pix(chave_pix, float(self.fila['valor']), nome=nome_med)
             qr_url = gerar_qr_url(pix)
             embed_qr = discord.Embed(title="💰 PAGAMENTO VIA PIX", color=0x00ff00)
             embed_qr.add_field(name="Valor a pagar", value=formatar_valor(self.fila['valor']), inline=False)
             embed_qr.add_field(name="Mediador", value=med.mention if med else nome_med, inline=False)
-            embed_qr.add_field(name="Chave do Mediador", value=f"`{chave}`", inline=False)
+            embed_qr.add_field(name="Chave do Mediador", value=f"`{chave_pix}`", inline=False)
             embed_qr.add_field(name="Pix Copia e Cola", value=f"```{pix}```", inline=False)
             embed_qr.set_image(url=qr_url)
             await interaction.channel.send(embed=embed_qr)
@@ -337,13 +330,12 @@ async def fila_mediadores(ctx):
     embed.add_field(name=f"0/{MAX_MEDIADORES_FILA} mediador(es) na fila", value="Nenhum mediador na fila", inline=False)
     await ctx.send(embed=embed, view=BotoesFilaMediadores())
 
-@bot.command()
-async def chave(ctx, nova_chave: str = None):
+@bot.command(name="chave")
+async def cmd_chave(ctx, nova_chave: str = None):
     if "configurar-chave" not in ctx.channel.name.lower() and "configurar" not in ctx.channel.name.lower():
         await ctx.send("❌ Use esse comando só no canal `# 🔑 • configurar-chave`!", delete_after=5)
         return
-    pode, _ = await e_mediador_check(ctx.author, ctx.guild)
-    if not pode:
+    if not tem_cargo_permitido(ctx.author, ctx.guild):
         await ctx.send("❌ Só MEDIADOR / DONO / CEO / SUP / DEV pode configurar!", delete_after=5)
         return
     if not nova_chave:

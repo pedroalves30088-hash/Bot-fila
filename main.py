@@ -26,7 +26,7 @@ bot = commands.Bot(command_prefix=('!', '.'), intents=intents)
 
 VALORES = [0.05, 0.10, 0.15, 0.30, 0.60, 1, 2, 3, 5, 10, 20, 30, 50, 100]
 MAX_MEDIADORES_FILA = 2
-CARGOS_PERMITIDOS = ["MEDIADOR", "DONO", "CEO", "SUP", "DEV"]
+CARGOS_PERMITIDOS = ["MEDIADOR", "DONO", "CEO", "SUP", "DEV", "PAND", "BK", "ADMIN", "MOD", "STAFF", "GERENTE", "ADM"]
 ARQUIVO_CHAVES = "chaves.json"
 ARQUIVO_RANKING = "ranking.json"
 ARQUIVO_DIARIO = "destaque_diario.json"
@@ -696,7 +696,6 @@ async def cmd_painelranking(ctx):
     embed.add_field(name="", value="Seja Bem Vindo(a) ao painel de ranking e perfil do servidor!", inline=False)
     await ctx.send(embed=embed, view=ViewRankingPanel())
 
-# ===== DESTAQUE DIARIO =====
 @bot.command(name="destaque", aliases=["destaquediario"])
 async def cmd_destaque(ctx):
     if not diario["wins"]:
@@ -826,34 +825,44 @@ async def cmd_fila_mediadores(ctx):
     embed.add_field(name=f"0/{MAX_MEDIADORES_FILA} mediador(es) na fila", value="Nenhum mediador na fila", inline=False)
     await ctx.send(embed=embed, view=BotoesFilaMediadores())
 
-@bot.command(name="chave")
+# ===== CHAVE - CORRIGIDO =====
+@bot.command(name="chave", aliases=["chavesalva", "salvarchave", "setchave"])
 async def cmd_chave(ctx, *, nova_chave: str = None):
     if not tem_cargo_permitido(ctx.author, ctx.guild):
-        await ctx.send("❌ Só MEDIADOR / DONO / CEO / SUP / DEV pode configurar!", delete_after=5)
+        await ctx.send(f"❌ {ctx.author.mention} Tu não tem cargo de staff!\nTeus cargos: {', '.join([r.name for r in ctx.author.roles if r.name != '@everyone'])}")
         return
     if not nova_chave:
-        await ctx.send("Uso: `!chave SUA-CHAVE-PIX`", delete_after=10)
+        await ctx.send(f"❌ Uso certo: `!chave SUA-CHAVE-PIX`\nExemplo: `!chave 06465945754`\nExemplo: `!chave email@gmail.com`")
         return
-    nova_chave = nova_chave.strip()
+    nova_chave = nova_chave.strip().replace(" ", "")
     global ultimo_mediador_id
     chaves_mediadores[ctx.author.id] = {"chave": nova_chave, "nome": ctx.author.display_name}
     ultimo_mediador_id = ctx.author.id
     salvar_chaves()
-    try:
-        await ctx.message.delete()
-    except: pass
-    await ctx.send(f"✅ {ctx.author.mention} sua chave PIX foi salva!\nChave: `{nova_chave}`", delete_after=15)
+    await ctx.send(f"✅ {ctx.author.mention} **SUA CHAVE FOI SALVA!**\nChave: `{nova_chave}`\nNome: {ctx.author.display_name}\n\nAgora testa: `!minhachave`")
 
-@bot.command(name="minhachave")
+@bot.command(name="minhachave", aliases=["verchave", "mychave"])
 async def cmd_minhachave(ctx):
     if ctx.author.id in chaves_mediadores:
         dados = chaves_mediadores[ctx.author.id]
-        await ctx.send(f"✅ {ctx.author.mention} tua chave tá salva!\nChave: `{dados['chave']}`", delete_after=15)
+        await ctx.send(f"✅ {ctx.author.mention} tua chave tá salva!\nChave: `{dados['chave']}`\nNome: {dados['nome']}")
     else:
-        await ctx.send(f"❌ {ctx.author.mention} tu ainda NÃO tem chave salva!\nDigita: `!chave SUA-CHAVE-PIX`", delete_after=10)
-    try:
-        await ctx.message.delete()
-    except: pass
+        await ctx.send(f"❌ {ctx.author.mention} tu ainda NÃO tem chave salva!\nDigita: `!chave SUA-CHAVE-PIX`\nExemplo: `!chave 06465945754`")
+
+@bot.command(name="verchaves")
+async def cmd_verchaves(ctx):
+    if not tem_cargo_permitido(ctx.author, ctx.guild):
+        await ctx.send("❌ Só staff!", delete_after=5)
+        return
+    if not chaves_mediadores:
+        await ctx.send("❌ Nenhuma chave salva ainda!")
+        return
+    texto = ""
+    for uid, dados in chaves_mediadores.items():
+        texto += f"<@{uid}> - `{dados['chave']}` - {dados['nome']}\n"
+    embed = discord.Embed(title="🔑 Chaves Salvas", color=0x5865F2)
+    embed.add_field(name="Mediadores", value=texto, inline=False)
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def painel(ctx, modo: str = "2x2 Mobile"):

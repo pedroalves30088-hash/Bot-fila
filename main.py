@@ -23,6 +23,9 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 VALORES = [0.05, 0.10, 0.15, 0.30, 0.60, 1, 2, 3, 5, 10, 20, 30, 50, 100]
 MAX_MEDIADORES_FILA = 2
 
+# SÓ ESSES CARGOS PODEM ENTRAR NA FILA DE MEDIADOR E CONFIGURAR CHAVE
+CARGOS_PERMITIDOS = ["MEDIADOR", "DONO", "CEO", "SUP", "DEV"]
+
 def formatar_valor(v):
     if v < 1:
         return f"{v:.2f}cc".replace(".", ",")
@@ -34,9 +37,7 @@ def formatar_valor(v):
 filas = {}
 chaves_mediadores = {}
 ultimo_mediador_id = None
-
-# ===== FILA DE MEDIADORES =====
-fila_mediadores = []  # lista de Member
+fila_mediadores = []
 msg_fila_mediadores_id = None
 
 def pegar_cargos_staff(guild):
@@ -50,10 +51,14 @@ def pegar_cargos_staff(guild):
     return dono, mediador
 
 def e_mediador(member, guild):
-    dono, mediador = pegar_cargos_staff(guild)
-    if not mediador:
-        return False
-    return any(r.id == mediador.id for r in member.roles) or member.id == guild.owner_id
+    if member.id == guild.owner_id:
+        return True
+    for r in member.roles:
+        nome = r.name.upper()
+        for cargo in CARGOS_PERMITIDOS:
+            if cargo in nome:
+                return True
+    return False
 
 # ===== PIX =====
 def crc16(payload):
@@ -85,56 +90,48 @@ def gerar_qr_url(pix_copia_cola):
 class BotoesFilaMediadores(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
     async def atualizar(self, interaction):
-        global msg_fila_mediadores_id
+        lista = ""
+        for i, m in enumerate(fila_mediadores):
+            lista += f"{i+1}. {m.display_name}\n"
+        if not lista:
+            lista = "Nenhum mediador na fila"
+        embed = discord.Embed(title="👤 Fila de Mediadores", color=0x5865F2)
+        embed.add_field(name=f"{len(fila_mediadores)}/{MAX_MEDIADORES_FILA} mediador(es) na fila", value=lista, inline=False)
+        if len(fila_mediadores) >= MAX_MEDIADORES_FILA:
+            embed.add_field(name="🔒 Fila cheia", value="Um mediador precisa sair para abrir vaga.", inline=False)
         try:
-            msg = await interaction.channel.fetch_message(msg_fila_mediadores_id)
-            lista = ""
-            for i, m in enumerate(fila_mediadores):
-                lista += f"{i+1}. {m.display_name}\n"
-            if not lista:
-                lista = "Nenhum mediador na fila"
-            embed = discord.Embed(title="👤 Fila de Mediadores", color=0x5865F2)
-            embed.add_field(name=f"{len(fila_mediadores)}/{MAX_MEDIADORES_FILA} mediador(es) na fila", value=lista, inline=False)
-            if len(fila_mediadores) >= MAX_MEDIADORES_FILA:
-                embed.add_field(name="🔒 Fila cheia", value="Um mediador precisa sair para abrir vaga.", inline=False)
-            await msg.edit(embed=embed, view=self)
+            await interaction.message.edit(embed=embed, view=self)
         except:
             pass
-
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.blurple, custom_id="med_entrar")
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         if not e_mediador(interaction.user, interaction.guild):
-            await interaction.followup.send("❌ Só quem tem cargo MEDIADOR pode entrar nessa fila!", ephemeral=True)
+            cargos_do_user = [r.name for r in interaction.user.roles]
+            await interaction.followup.send(f"❌ Só MEDIADOR / DONO / CEO / SUP / DEV pode entrar! Seus cargos: {', '.join(cargos_do_user)}", ephemeral=True)
             return
         if interaction.user in fila_mediadores:
-            await interaction.followup.send("Você já está na fila de mediadores!", ephemeral=True)
+            await interaction.followup.send("Você já está na fila!", ephemeral=True)
             return
         if len(fila_mediadores) >= MAX_MEDIADORES_FILA:
             await interaction.followup.send("Fila cheia! Espera um mediador sair.", ephemeral=True)
             return
         fila_mediadores.append(interaction.user)
         await self.atualizar(interaction)
-
+        await interaction.followup.send("✅ Você entrou na fila de mediadores!", ephemeral=True)
     @discord.ui.button(label="Sair", style=discord.ButtonStyle.red, custom_id="med_sair")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         if interaction.user in fila_mediadores:
             fila_mediadores.remove(interaction.user)
             await self.atualizar(interaction)
-
+            await interaction.followup.send("Você saiu da fila!", ephemeral=True)
     @discord.ui.button(label="Limpar Fila", style=discord.ButtonStyle.red, custom_id="med_limpar")
     async def limpar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        dono, mediador = pegar_cargos_staff(interaction.guild)
-        ids = []
-        if dono: ids.append(dono.id)
-        if mediador: ids.append(mediador.id)
-        e_staff = any(r.id in ids for r in interaction.user.roles) or interaction.user.id == interaction.guild.owner_id
-        if not e_staff:
-            await interaction.followup.send("Só DONO / MEDIADOR pode limpar!", ephemeral=True)
+        if not e_mediador(interaction.user, interaction.guild):
+            await interaction.followup.send("Só MEDIADOR / DONO / CEO / SUP / DEV pode limpar!", ephemeral=True)
             return
         fila_mediadores.clear()
         await self.atualizar(interaction)
@@ -145,7 +142,6 @@ class BotoesConfirmar(discord.ui.View):
         super().__init__(timeout=None)
         self.fila = fila_info
         self.confirmados = set()
-
     @discord.ui.button(label="Confirmar", style=discord.ButtonStyle.green, custom_id="confirmar")
     async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=False)
@@ -163,8 +159,6 @@ class BotoesConfirmar(discord.ui.View):
         if self.fila.get("mediador_escolhido"):
             embed.add_field(name="Mediador", value=self.fila["mediador_escolhido"].mention, inline=False)
         await interaction.followup.send(embed=embed)
-
-        # QR CODE COM A CHAVE DO MEDIADOR ESCOLHIDO
         med = self.fila.get("mediador_escolhido")
         chave = None
         nome_med = "MEDIADOR"
@@ -174,7 +168,6 @@ class BotoesConfirmar(discord.ui.View):
         elif ultimo_mediador_id and ultimo_mediador_id in chaves_mediadores:
             chave = chaves_mediadores[ultimo_mediador_id]["chave"]
             nome_med = chaves_mediadores[ultimo_mediador_id]["nome"]
-
         if chave:
             pix = gerar_pix(chave, float(self.fila['valor']), nome=nome_med)
             qr_url = gerar_qr_url(pix)
@@ -193,7 +186,6 @@ class BotoesConfirmar(discord.ui.View):
             await interaction.message.edit(view=self)
         except:
             pass
-
     @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.red, custom_id="cancelar")
     async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=False)
@@ -261,15 +253,12 @@ async def criar_canal_partida(guild, fila):
     dono, mediador_cargo = pegar_cargos_staff(guild)
     numero = random.randint(10000, 99999)
     nome_canal = f"aguardando-{numero}"
-
-    # ESCOLHE 1 MEDIADOR ALEATÓRIO DA FILA DE MEDIADORES
     mediador_escolhido = None
     if fila_mediadores:
         mediador_escolhido = random.choice(fila_mediadores)
         fila["mediador_escolhido"] = mediador_escolhido
     else:
         fila["mediador_escolhido"] = None
-
     overwrites = { guild.default_role: discord.PermissionOverwrite(view_channel=False) }
     for j in fila["jogadores"]:
         overwrites[j] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
@@ -279,7 +268,6 @@ async def criar_canal_partida(guild, fila):
         overwrites[mediador_cargo] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
     if mediador_escolhido:
         overwrites[mediador_escolhido] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
     categoria = None
     for cat in guild.categories:
         if "MEDIADOR" in cat.name.upper() or "PARTIDA" in cat.name.upper():
@@ -314,7 +302,6 @@ async def criar_paineis(ctx, modo):
         filas[msg.id] = {"modo": modo, "valor": valor, "jogadores": []}
         await msg.edit(view=BotoesFila(msg.id))
 
-# ===== COMANDO PRA CRIAR A FILA DE MEDIADORES =====
 @bot.command()
 async def fila_mediadores(ctx):
     global msg_fila_mediadores_id
@@ -332,8 +319,8 @@ async def chave(ctx, nova_chave: str = None):
     if "configurar-chave" not in ctx.channel.name.lower() and "configurar" not in ctx.channel.name.lower():
         await ctx.send("❌ Use esse comando só no canal `# 🔑 • configurar-chave`!", delete_after=5)
         return
-    if not e_mediador(ctx.author, ctx.guild) and ctx.author.id != ctx.guild.owner_id:
-        await ctx.send("❌ Só DONO / MEDIADOR pode configurar a chave!", delete_after=5)
+    if not e_mediador(ctx.author, ctx.guild):
+        await ctx.send("❌ Só MEDIADOR / DONO / CEO / SUP / DEV pode configurar a chave!", delete_after=5)
         return
     if not nova_chave:
         await ctx.send("Uso: `!chave SUA-CHAVE-PIX`", delete_after=10)

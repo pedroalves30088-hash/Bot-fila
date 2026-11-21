@@ -4,6 +4,7 @@ import os
 import random
 import asyncio
 import urllib.parse
+import re
 from flask import Flask
 from threading import Thread
 
@@ -36,7 +37,6 @@ def formatar_valor(v):
 filas = {}
 chaves_mediadores = {}
 ultimo_mediador_id = None
-# NOME DIFERENTE DO COMANDO PRA NÃO DAR CONFLITO!
 lista_mediadores = []
 
 def pegar_cargos_staff(guild):
@@ -85,6 +85,45 @@ def gerar_qr_url(pix_copia_cola):
     dados = urllib.parse.quote(pix_copia_cola)
     return f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={dados}"
 
+# BOTÃO LIBERAR PIX - igual do vídeo
+class BotoesLiberarPix(discord.ui.View):
+    def __init__(self, fila_info):
+        super().__init__(timeout=None)
+        self.fila = fila_info
+    @discord.ui.button(label="Liberar Pix", style=discord.ButtonStyle.green, custom_id="liberar_pix")
+    async def liberar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=False)
+        med = self.fila.get("mediador_escolhido")
+        # Só o mediador da partida ou staff pode liberar
+        if med and interaction.user.id != med.id and not tem_cargo_permitido(interaction.user, interaction.guild):
+            await interaction.followup.send("❌ Só o mediador dessa partida pode liberar o Pix!", ephemeral=True)
+            return
+        chave_pix = None
+        nome_med = "MEDIADOR"
+        if med and med.id in chaves_mediadores:
+            chave_pix = chaves_mediadores[med.id]["chave"]
+            nome_med = chaves_mediadores[med.id]["nome"]
+        elif ultimo_mediador_id and ultimo_mediador_id in chaves_mediadores:
+            chave_pix = chaves_mediadores[ultimo_mediador_id]["chave"]
+            nome_med = chaves_mediadores[ultimo_mediador_id]["nome"]
+        if not chave_pix:
+            await interaction.followup.send("⚠️ Mediador ainda não configurou a chave! Vai no `# 🔑 • configurar-chave` e digita `!chave SUA-CHAVE`", ephemeral=False)
+            return
+        pix = gerar_pix(chave_pix, float(self.fila['valor']), nome=nome_med)
+        qr_url = gerar_qr_url(pix)
+        embed_qr = discord.Embed(title="💰 PAGAMENTO VIA PIX", color=0x00ff00)
+        embed_qr.add_field(name="Valor a pagar", value=formatar_valor(self.fila['valor']), inline=False)
+        embed_qr.add_field(name="Mediador", value=med.mention if med else nome_med, inline=False)
+        embed_qr.add_field(name="Chave do Mediador", value=f"`{chave_pix}`", inline=False)
+        embed_qr.add_field(name="Pix Copia e Cola", value=f"```{pix}```", inline=False)
+        embed_qr.set_image(url=qr_url)
+        await interaction.followup.send(embed=embed_qr)
+        button.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except:
+            pass
+
 class BotoesFilaMediadores(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -102,7 +141,6 @@ class BotoesFilaMediadores(discord.ui.View):
             await interaction.message.edit(embed=embed, view=self)
         except Exception as e:
             print(f"Erro atualizar: {e}")
-
     @discord.ui.button(label="Entrar", style=discord.ButtonStyle.blurple, custom_id="med_entrar")
     async def entrar(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
@@ -130,7 +168,6 @@ class BotoesFilaMediadores(discord.ui.View):
                 await interaction.followup.send(f"Erro: {e}", ephemeral=True)
             except:
                 pass
-
     @discord.ui.button(label="Sair", style=discord.ButtonStyle.red, custom_id="med_sair")
     async def sair(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
@@ -143,7 +180,6 @@ class BotoesFilaMediadores(discord.ui.View):
             await interaction.followup.send("Você saiu da fila!", ephemeral=True)
         except:
             pass
-
     @discord.ui.button(label="Limpar Fila", style=discord.ButtonStyle.red, custom_id="med_limpar")
     async def limpar(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
@@ -169,37 +205,38 @@ class BotoesConfirmar(discord.ui.View):
             await interaction.followup.send("Você já confirmou!", ephemeral=True)
             return
         self.confirmados.add(interaction.user.id)
+        # 1º confirmou - igual do vídeo
         if len(self.confirmados) < 2:
-            await interaction.followup.send(f"✅ {interaction.user.mention} confirmou! **1/2**", ephemeral=False)
+            # Acha quem falta confirmar
+            outro = [j for j in self.fila['jogadores'] if j.id != interaction.user.id]
+            outro_txt = outro[0].mention if outro else "o outro jogador"
+            embed = discord.Embed(title="Aposta Confirmada", color=0x5865F2)
+            embed.add_field(name="", value=f"{interaction.user.mention} confirmou a aposta!\nAguardando {outro_txt} confirmar para iniciar.", inline=False)
+            await interaction.followup.send(embed=embed)
             return
-        embed = discord.Embed(title="✅ PARTIDA CONFIRMADA!", color=0x00ff00)
-        embed.add_field(name="Modo", value=f"{self.fila['modo']} | Full Ump Xm8", inline=False)
+        # 2º confirmou - RENOMEIA O CANAL igual do vídeo!
+        canal = interaction.channel
+        numero = self.fila.get("numero")
+        if not numero:
+            m = re.search(r"(\d+)", canal.name)
+            numero = m.group(1) if m else random.randint(10000, 99999)
+            self.fila["numero"] = numero
+        try:
+            await canal.edit(name=f"fila-{numero}")
+        except Exception as e:
+            print(f"Erro renomear: {e}")
+        med = self.fila.get("mediador_escolhido")
+        embed = discord.Embed(title="✅ Partida Confirmada", color=0x00ff00)
+        embed.add_field(name="Modo", value=f"{self.fila['modo']} | Gelo Normal", inline=False)
         embed.add_field(name="Valor", value=formatar_valor(self.fila['valor']), inline=False)
         embed.add_field(name="Jogadores", value=" x ".join([j.mention for j in self.fila['jogadores']]), inline=False)
-        if self.fila.get("mediador_escolhido"):
-            embed.add_field(name="Mediador", value=self.fila["mediador_escolhido"].mention, inline=False)
+        if med:
+            embed.add_field(name="Mediador", value=f"{med.mention}", inline=False)
+            embed.add_field(name="No fim da partida, use .v ou .d então .aux", value=f"Aguarde o mediador {med.mention} liberar seu Pix", inline=False)
         await interaction.followup.send(embed=embed)
-        med = self.fila.get("mediador_escolhido")
-        chave_pix = None
-        nome_med = "MEDIADOR"
-        if med and med.id in chaves_mediadores:
-            chave_pix = chaves_mediadores[med.id]["chave"]
-            nome_med = chaves_mediadores[med.id]["nome"]
-        elif ultimo_mediador_id and ultimo_mediador_id in chaves_mediadores:
-            chave_pix = chaves_mediadores[ultimo_mediador_id]["chave"]
-            nome_med = chaves_mediadores[ultimo_mediador_id]["nome"]
-        if chave_pix:
-            pix = gerar_pix(chave_pix, float(self.fila['valor']), nome=nome_med)
-            qr_url = gerar_qr_url(pix)
-            embed_qr = discord.Embed(title="💰 PAGAMENTO VIA PIX", color=0x00ff00)
-            embed_qr.add_field(name="Valor a pagar", value=formatar_valor(self.fila['valor']), inline=False)
-            embed_qr.add_field(name="Mediador", value=med.mention if med else nome_med, inline=False)
-            embed_qr.add_field(name="Chave do Mediador", value=f"`{chave_pix}`", inline=False)
-            embed_qr.add_field(name="Pix Copia e Cola", value=f"```{pix}```", inline=False)
-            embed_qr.set_image(url=qr_url)
-            await interaction.channel.send(embed=embed_qr)
-        else:
-            await interaction.channel.send("⚠️ Mediador ainda não configurou a chave! Vai no `# 🔑 • configurar-chave` e digita `!chave SUA-CHAVE`")
+        # Mensagem Aguarde o mediador liberar Pix + botão
+        if med:
+            await canal.send(content=f"Aguarde o mediador {med.mention} liberar seu Pix", view=BotoesLiberarPix(self.fila))
         for child in self.children:
             child.disabled = True
         try:
@@ -271,6 +308,7 @@ async def atualizar_painel(interaction, fila, msg_id):
 async def criar_canal_partida(guild, fila):
     dono, mediador_cargo = pegar_cargos_staff(guild)
     numero = random.randint(10000, 99999)
+    fila["numero"] = numero
     nome_canal = f"aguardando-{numero}"
     mediador_escolhido = None
     if lista_mediadores:
@@ -298,7 +336,7 @@ async def criar_canal_partida(guild, fila):
     if mediador_cargo: ping += f"{mediador_cargo.mention} "
     jogadores = " x ".join([j.mention for j in fila["jogadores"]])
     embed = discord.Embed(title=f"Esperando Confirmar #{numero}", color=0xff0000)
-    embed.add_field(name="Modo", value=f"{fila['modo']} | Full Ump Xm8", inline=False)
+    embed.add_field(name="Modo", value=f"{fila['modo']} | Gelo Normal", inline=False)
     embed.add_field(name="Valor", value=formatar_valor(fila["valor"]), inline=False)
     embed.add_field(name="Jogadores", value=jogadores, inline=False)
     if mediador_escolhido:
@@ -375,7 +413,6 @@ async def painel3x3emu(ctx):
 @bot.command()
 async def painel4x4emu(ctx):
     await criar_paineis(ctx, "4x4 Emu")
-
 @bot.command()
 async def clear_all(ctx):
     try:
